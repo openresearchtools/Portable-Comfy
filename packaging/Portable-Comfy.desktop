@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Portable Comfy
+Comment=Portable ComfyUI desktop application
+Exec=portable-comfy
+Icon=portable-comfy
+Terminal=false
+Categories=Graphics;
+StartupNotify=true
+X-AppImage-Name=Portable Comfy

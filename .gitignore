@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*~
+.DS_Store
+
+# Build output and downloaded portable payloads
+build/
+dist/
+artifacts/
+.build/
+.cache/
+wheelhouse/
+*.AppImage
+*.tar.gz
+*.tar.zst
+
+# Locally assembled portable roots
+Portable-Comfy/
+portable-root/

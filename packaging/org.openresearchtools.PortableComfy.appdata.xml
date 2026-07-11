@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.openresearchtools.PortableComfy</id>
+  <name>Portable Comfy</name>
+  <summary>Portable ComfyUI desktop application</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="org.openresearchtools">
+    <name>Open Research Tools</name>
+  </developer>
+  <description>
+    <p>Run a bundled ComfyUI Core and CUDA Python runtime from one movable Linux directory.</p>
+  </description>
+  <launchable type="desktop-id">org.openresearchtools.PortableComfy.desktop</launchable>
+  <url type="homepage">https://github.com/openresearchtools/Portable-Comfy</url>
+  <provides><binary>portable-comfy</binary></provides>
+  <content_rating type="oars-1.1"/>
+</component>

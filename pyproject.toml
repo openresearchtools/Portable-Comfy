@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portable-comfy"
+version = "0.1.0"
+description = "One-click Linux desktop launcher and portable runtime manager for ComfyUI"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Open Research Tools" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "pywebview[qt]==6.2.1",
+  "PyQt6==6.11.0",
+  "PyQt6-Qt6==6.11.1",
+  "PyQt6-WebEngine==6.11.0",
+  "PyQt6-WebEngine-Qt6==6.11.1",
+  "QtPy==2.4.3",
+]
+
+[project.optional-dependencies]
+build = [
+  "pyinstaller==6.21.0",
+]
+dev = [
+  "pytest==9.1.1",
+]
+
+[project.scripts]
+portable-comfy = "portable_comfy.app:main"
+
+[project.urls]
+Homepage = "https://github.com/openresearchtools/Portable-Comfy"
+Issues = "https://github.com/openresearchtools/Portable-Comfy/issues"
+Repository = "https://github.com/openresearchtools/Portable-Comfy.git"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
