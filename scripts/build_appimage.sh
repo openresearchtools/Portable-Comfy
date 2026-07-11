@@ -27,18 +27,47 @@ tool="$work_dir/appimagetool-x86_64.AppImage"
 runtime_file="$work_dir/runtime-x86_64"
 output="$portable_root/Portable-Comfy.AppImage"
 
-require_command "$build_python" curl sha256sum
+require_command "$build_python" cmp curl sha256sum
 [[ -f "$REPO_ROOT/src/portable_comfy/__main__.py" ]] || die "launcher entrypoint is missing"
+
+# actions/setup-python exports its own lib directory through LD_LIBRARY_PATH.
+# The launcher build must instead resolve and freeze the libpython belonging to
+# the selected build interpreter (normally runtime/python/python-portable).
+mapfile -t build_runtime < <("$build_python" - <<'PY'
+import pathlib
+import sys
+import sysconfig
+
+print(pathlib.Path(sys.prefix).resolve())
+print(pathlib.Path(sysconfig.get_config_var("LIBDIR")).resolve())
+print(sysconfig.get_config_var("LDLIBRARY"))
+PY
+)
+((${#build_runtime[@]} == 3)) || die "could not inspect the launcher build interpreter"
+build_prefix="${build_runtime[0]}"
+build_library_dir="${build_runtime[1]}"
+build_libpython="$build_library_dir/${build_runtime[2]}"
+[[ -d "$build_prefix" && -f "$build_libpython" ]] \
+  || die "selected build interpreter has no shared libpython: $build_libpython"
+build_libpython="$(realpath -- "$build_libpython")"
+unset PYTHONHOME PYTHONPATH VIRTUAL_ENV
+export LD_LIBRARY_PATH="$build_library_dir"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+
 safe_rm_tree "$appdir"
 safe_rm_tree "$venv"
 mkdir -p -- "$work_dir" "$appdir/usr/lib/portable-comfy" "$appdir/usr/bin" \
   "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/scalable/apps"
 
 "$build_python" -m venv "$venv"
-"$venv/bin/python" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel
+"$venv/bin/python" -m pip install --disable-pip-version-check --upgrade \
+  "pip==26.1.2" "setuptools==83.0.0" "wheel==0.47.0" "packaging==26.2"
 "$venv/bin/python" -m pip install --disable-pip-version-check \
   -r "$REPO_ROOT/packaging/launcher-requirements.txt"
-"$venv/bin/python" -m pip install --disable-pip-version-check --no-deps "$REPO_ROOT"
+"$venv/bin/python" -m pip install --disable-pip-version-check \
+  --no-build-isolation --no-deps "$REPO_ROOT"
+"$venv/bin/python" -m pip check
 
 log "freezing launcher with PyInstaller"
 "$venv/bin/pyinstaller" --noconfirm --clean --noupx --onedir --windowed \
@@ -51,6 +80,21 @@ log "freezing launcher with PyInstaller"
   --hidden-import qtpy.QtNetwork --hidden-import qtpy.QtWebChannel \
   --hidden-import qtpy.QtWebEngineCore --hidden-import qtpy.QtWebEngineWidgets \
   "$REPO_ROOT/src/portable_comfy/__main__.py"
+frozen_root="$work_dir/pyinstaller-dist/portable-comfy/_internal"
+frozen_libpython="$frozen_root/$(basename -- "$build_libpython")"
+[[ -f "$frozen_libpython" ]] || die "PyInstaller did not collect the selected libpython"
+cmp --silent "$build_libpython" "$frozen_libpython" \
+  || die "PyInstaller collected a host libpython instead of $build_libpython"
+required_qt_libraries=(
+  libpulse.so.0 libxcb-cursor.so.0 libxcb-icccm.so.4 libxcb-image.so.0
+  libxcb-keysyms.so.1 libxcb-render-util.so.0 libxcb-shape.so.0
+  libxcb-util.so.1 libxcb-xkb.so.1 libxkbcommon-x11.so.0
+)
+for library in "${required_qt_libraries[@]}"; do
+  [[ -f "$frozen_root/$library" ]] \
+    || die "PyInstaller did not collect required Qt runtime library: $library"
+done
+log "verified frozen launcher libpython and Qt runtime libraries"
 cp -a -- "$work_dir/pyinstaller-dist/portable-comfy/." "$appdir/usr/lib/portable-comfy/"
 
 cat >"$appdir/usr/bin/portable-comfy" <<'EOF'

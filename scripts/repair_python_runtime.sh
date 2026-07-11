@@ -3,6 +3,9 @@
 
 set -Eeuo pipefail
 IFS=$'\n\t'
+# Relocation repair must not recreate build-path-bearing bytecode immediately
+# after purging it. Python will generate caches after installation, in place.
+export PYTHONDONTWRITEBYTECODE=1
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"

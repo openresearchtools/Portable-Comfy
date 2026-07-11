@@ -86,6 +86,10 @@ if ((skip_appimage == 0)); then
   fi
   "$SCRIPT_DIR/build_appimage.sh" "$portable_root" --work-dir "$work_dir/appimage" \
     --build-python "$launcher_python"
+  if ((skip_runtime == 0)); then
+    # Keep the shipped interpreter free of bytecode tied to the CI build path.
+    "$SCRIPT_DIR/repair_python_runtime.sh" "$portable_root/runtime/python"
+  fi
 else
   log "WARNING: --skip-appimage creates a structural-only staging tree"
 fi

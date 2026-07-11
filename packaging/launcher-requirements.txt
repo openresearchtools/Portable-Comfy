@@ -1,7 +1,15 @@
 PyInstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6
+altgraph==0.17.5
 pywebview==6.2.1
+proxy_tools==0.1.0
+bottle==0.13.4
+typing_extensions==4.16.0
 PyQt6==6.11.0
 PyQt6-Qt6==6.11.1
 PyQt6-WebEngine==6.11.0
 PyQt6-WebEngine-Qt6==6.11.1
+PyQt6-sip==13.11.1
 QtPy==2.4.3
+packaging==26.2
+setuptools==83.0.0
