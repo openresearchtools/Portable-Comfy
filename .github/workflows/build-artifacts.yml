@@ -241,7 +241,9 @@ jobs:
       - name: Launch ComfyUI and the frozen desktop shell
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
+          QTWEBENGINE_CHROMIUM_FLAGS: "--disable-gpu"
           QTWEBENGINE_DISABLE_SANDBOX: "1"
+          QT_QUICK_BACKEND: "software"
         run: |
           xvfb-run --auto-servernum \
             --server-args='-screen 0 1280x800x24 +extension GLX +render -noreset' \
