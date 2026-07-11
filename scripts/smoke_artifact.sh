@@ -109,7 +109,7 @@ desktop_command=("$appimage" --desktop-smoke-test --disable-custom-nodes)
 if ((allow_no_gpu)); then
   desktop_command+=(--cpu)
 fi
-if [[ -z "${DISPLAY:-}" ]]; then
+if [[ -z "${DISPLAY:-}" && "${QT_QPA_PLATFORM:-}" != offscreen ]]; then
   command -v xvfb-run >/dev/null 2>&1 \
     || die "desktop smoke requires DISPLAY or xvfb-run"
   desktop_command=(xvfb-run -a -s '-screen 0 1280x800x24' "${desktop_command[@]}")

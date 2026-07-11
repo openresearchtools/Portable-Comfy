@@ -119,7 +119,7 @@ NVIDIA GPU. `--allow-no-gpu` permits ComfyUI's CPU fallback solely to check:
 - the bundled interpreter, imports and a freshly compiled native extension
   after relocation to a path containing spaces;
 - server startup and HTTP readiness;
-- the actual AppImage creating a Qt WebEngine window under a virtual X server,
+- the actual AppImage creating a Qt WebEngine window on Qt's offscreen platform,
   loading the healthy compiled frontend, receiving its loaded event and
   closing cleanly;
 - orderly launcher-driven shutdown.

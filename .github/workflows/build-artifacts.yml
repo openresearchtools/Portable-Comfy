@@ -214,8 +214,6 @@ jobs:
             libegl1 \
             libfontconfig1 \
             libgl1 \
-            libgl1-mesa-dri \
-            libglx-mesa0 \
             libnss3 \
             libopengl0 \
             libxcomposite1 \
@@ -229,9 +227,7 @@ jobs:
             libxcb-render-util0 \
             libxcb-shape0 \
             libxcb-xinerama0 \
-            libxcb-xfixes0 \
-            xauth \
-            xvfb
+            libxcb-xfixes0
 
       - name: Preflight the downloaded payload
         run: |
@@ -241,13 +237,12 @@ jobs:
       - name: Launch ComfyUI and the frozen desktop shell
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_QPA_PLATFORM: "offscreen"
           QTWEBENGINE_CHROMIUM_FLAGS: "--disable-gpu"
           QTWEBENGINE_DISABLE_SANDBOX: "1"
           QT_QUICK_BACKEND: "software"
         run: |
-          xvfb-run --auto-servernum \
-            --server-args='-screen 0 1280x800x24 +extension GLX +render -noreset' \
-            scripts/smoke_artifact.sh \
-              downloaded/full/Portable-Comfy-linux-x86_64.tar.gz \
-              --timeout 120 \
-              --allow-no-gpu
+          scripts/smoke_artifact.sh \
+            downloaded/full/Portable-Comfy-linux-x86_64.tar.gz \
+            --timeout 120 \
+            --allow-no-gpu
