@@ -3,6 +3,9 @@
 
 set -Eeuo pipefail
 IFS=$'\n\t'
+# A preflight must be observational: imports such as torch -> pickletools must
+# never add bytecode to a payload after its complete-file manifest is sealed.
+export PYTHONDONTWRITEBYTECODE=1
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"

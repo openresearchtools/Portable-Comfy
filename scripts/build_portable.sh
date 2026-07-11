@@ -99,6 +99,11 @@ if ((skip_runtime || skip_appimage)); then
 fi
 
 "$SCRIPT_DIR/preflight_portable.sh" "$portable_root"
+# The first manifest lets preflight verify the assembled tree. Seal it again
+# afterwards so any legitimate relocation repair performed by preflight is
+# represented in the archive. PYTHONDONTWRITEBYTECODE keeps imports read-only.
+python3 "$SCRIPT_DIR/generate_file_manifest.py" "$portable_root"
+python3 "$SCRIPT_DIR/verify_file_manifest.py" "$portable_root"
 create_deterministic_tar_gz "$portable_root" "$archive"
 assert_safe_archive_paths "$archive"
 "$SCRIPT_DIR/preflight_portable.sh" "$archive"
