@@ -27,7 +27,7 @@ tool="$work_dir/appimagetool-x86_64.AppImage"
 runtime_file="$work_dir/runtime-x86_64"
 output="$portable_root/Portable-Comfy.AppImage"
 
-require_command "$build_python" cmp curl sha256sum
+require_command "$build_python" awk cmp curl ldconfig sha256sum
 [[ -f "$REPO_ROOT/src/portable_comfy/__main__.py" ]] || die "launcher entrypoint is missing"
 
 # actions/setup-python exports its own lib directory through LD_LIBRARY_PATH.
@@ -85,10 +85,28 @@ frozen_libpython="$frozen_root/$(basename -- "$build_libpython")"
 [[ -f "$frozen_libpython" ]] || die "PyInstaller did not collect the selected libpython"
 cmp --silent "$build_libpython" "$frozen_libpython" \
   || die "PyInstaller collected a host libpython instead of $build_libpython"
+
+# QtWebEngine loads Wayland support during import even when the active display
+# is X11/Xvfb. PyInstaller does not discover these dlopen-time dependencies, so
+# copy the target runtime libraries explicitly instead of relying on the host.
+wayland_libraries=(
+  libwayland-client.so.0 libwayland-cursor.so.0
+  libwayland-egl.so.1 libwayland-server.so.0
+)
+for library in "${wayland_libraries[@]}"; do
+  source_library="$(
+    ldconfig -p | awk -v name="$library" \
+      '$1 == name && /x86-64/ && $NF ~ /^\// && !found { print $NF; found = 1 }'
+  )"
+  [[ -n "$source_library" && -f "$source_library" ]] \
+    || die "required Wayland runtime library is unavailable: $library"
+  cp -L -- "$source_library" "$frozen_root/$library"
+done
 required_qt_libraries=(
   libpulse.so.0 libxcb-cursor.so.0 libxcb-icccm.so.4 libxcb-image.so.0
   libxcb-keysyms.so.1 libxcb-render-util.so.0 libxcb-shape.so.0
   libxcb-util.so.1 libxcb-xkb.so.1 libxkbcommon-x11.so.0
+  "${wayland_libraries[@]}"
 )
 for library in "${required_qt_libraries[@]}"; do
   [[ -f "$frozen_root/$library" ]] \

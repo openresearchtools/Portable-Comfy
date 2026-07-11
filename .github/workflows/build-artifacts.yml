@@ -80,6 +80,10 @@ jobs:
             libsqlite3-dev \
             libssl-dev \
             libtiff5 \
+            libwayland-client0 \
+            libwayland-cursor0 \
+            libwayland-egl1 \
+            libwayland-server0 \
             libxcb-cursor0 \
             libxcb-icccm4 \
             libxcb-image0 \
