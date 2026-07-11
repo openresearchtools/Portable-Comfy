@@ -214,6 +214,8 @@ jobs:
             libegl1 \
             libfontconfig1 \
             libgl1 \
+            libgl1-mesa-dri \
+            libglx-mesa0 \
             libnss3 \
             libopengl0 \
             libxcomposite1 \
@@ -241,7 +243,8 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QTWEBENGINE_DISABLE_SANDBOX: "1"
         run: |
-          xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' \
+          xvfb-run --auto-servernum \
+            --server-args='-screen 0 1280x800x24 +extension GLX +render -noreset' \
             scripts/smoke_artifact.sh \
               downloaded/full/Portable-Comfy-linux-x86_64.tar.gz \
               --timeout 120 \
