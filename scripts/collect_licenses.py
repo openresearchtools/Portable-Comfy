@@ -11,7 +11,29 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 
-LICENSE_BASENAME_PREFIXES = ("license", "copying", "notice", "authors")
+LICENSE_BASENAME_PREFIXES = (
+    "license",
+    "licenses",
+    "copying",
+    "notice",
+    "notices",
+    "authors",
+)
+CODE_FILE_SUFFIXES = {
+    ".class",
+    ".dll",
+    ".dylib",
+    ".js",
+    ".jsx",
+    ".py",
+    ".pyc",
+    ".pyd",
+    ".pyi",
+    ".pyo",
+    ".so",
+    ".ts",
+    ".tsx",
+}
 
 
 def safe_name(value: str) -> str:
@@ -54,7 +76,13 @@ def is_license_path(path: PurePosixPath) -> bool:
     """Return true only for notice-like files, not Python license helper modules."""
     parts = tuple(part.lower() for part in path.parts)
     basename = path.name.lower()
-    if basename.startswith(LICENSE_BASENAME_PREFIXES):
+    if "__pycache__" in parts or path.suffix.lower() in CODE_FILE_SUFFIXES:
+        return False
+    if any(
+        basename == prefix
+        or basename.startswith((f"{prefix}.", f"{prefix}-", f"{prefix}_"))
+        for prefix in LICENSE_BASENAME_PREFIXES
+    ):
         return True
     # PEP 639 wheels conventionally place arbitrary-named notices beneath the
     # distribution metadata's licenses directory. Do not match package source

@@ -41,16 +41,24 @@ def test_collects_wheel_notice_and_skips_license_helper_module(tmp_path: Path):
     root = tmp_path / "site"
     notice = root / "example-1.0.dist-info/licenses/LICENSE"
     helper = root / "example/licenses/_spdx.py"
+    github_helper = root / "github/License.py"
+    compiled_helper = root / "github/__pycache__/License.cpython-313.pyc"
     notice.parent.mkdir(parents=True)
     helper.parent.mkdir(parents=True)
+    github_helper.parent.mkdir(parents=True)
+    compiled_helper.parent.mkdir(parents=True)
     notice.write_text("Example license text\n", encoding="utf-8")
     helper.write_text("NOT_A_NOTICE = True\n", encoding="utf-8")
+    github_helper.write_text("class License: ...\n", encoding="utf-8")
+    compiled_helper.write_bytes(b"not a legal notice")
     distribution = FakeDistribution(
         root,
         name="Example",
         files=(
             "example-1.0.dist-info/licenses/LICENSE",
             "example/licenses/_spdx.py",
+            "github/License.py",
+            "github/__pycache__/License.cpython-313.pyc",
         ),
     )
 
@@ -68,6 +76,7 @@ def test_collects_wheel_notice_and_skips_license_helper_module(tmp_path: Path):
         "Example-1.0/example-1.0.dist-info_licenses_LICENSE"
     ]
     assert not any(path.name == "_spdx.py" for path in destination.rglob("*"))
+    assert not any(path.suffix in {".py", ".pyc"} for path in destination.rglob("*"))
 
 
 def test_materializes_complete_license_text_from_legacy_metadata(tmp_path: Path):
