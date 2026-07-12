@@ -6,7 +6,7 @@ pywebview/Qt launcher owns the ComfyUI server process, while models, workflows,
 custom nodes and user data remain in a movable directory beside the launcher.
 No system Python or CUDA toolkit is used.
 
-This repository is an early Linux x86-64 prototype. 
+This repository is an early Linux x86-64 prototype.
 
 ## Portable layout
 
