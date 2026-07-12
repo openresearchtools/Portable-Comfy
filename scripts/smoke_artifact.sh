@@ -11,14 +11,17 @@ target="${1:-}"
 shift || true
 timeout_seconds=180
 allow_no_gpu=0
+desktop_backend=xcb
 while (($#)); do
   case "$1" in
     --timeout) timeout_seconds="$2"; shift 2 ;;
     --allow-no-gpu) allow_no_gpu=1; shift ;;
+    --native-wayland) desktop_backend=wayland; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$target" ]] || die "usage: $0 PATH_TO_TARBALL [--timeout N] [--allow-no-gpu]"
+[[ -n "$target" ]] \
+  || die "usage: $0 PATH_TO_TARBALL [--timeout N] [--allow-no-gpu] [--native-wayland]"
 target="$(absolute_path "$target")"
 [[ -f "$target" ]] || die "smoke test expects the complete tar.gz artifact"
 require_command curl python3 setsid
@@ -120,7 +123,11 @@ desktop_command=("$appimage" --desktop-smoke-test --disable-custom-nodes)
 if ((allow_no_gpu)); then
   desktop_command+=(--cpu)
 fi
-if [[ -z "${DISPLAY:-}" ]]; then
+if [[ "$desktop_backend" == wayland ]]; then
+  [[ "${XDG_SESSION_TYPE:-}" == wayland && -n "${WAYLAND_DISPLAY:-}" \
+     && -n "${XDG_RUNTIME_DIR:-}" ]] \
+    || die "native Wayland smoke requires an active Wayland desktop session"
+elif [[ -z "${DISPLAY:-}" ]]; then
   require_command Xvfb
   display_file="$temporary/xvfb-display"
   Xvfb -displayfd 3 -screen 0 1920x1200x24 -nolisten tcp \
@@ -139,14 +146,16 @@ if [[ -z "${DISPLAY:-}" ]]; then
   export DISPLAY
 fi
 
-require_command xwininfo
-if ! xwininfo -root >/dev/null 2>&1; then
-  die "desktop smoke cannot inspect the X11 root window on DISPLAY=$DISPLAY"
-fi
 before_windows="$temporary/windows-before"
-LC_ALL=C xwininfo -root -tree 2>/dev/null \
-  | awk '/"Portable Comfy"/ && /"portable-comfy" "portable-comfy"/ {print $1}' \
-  | sort -u >"$before_windows"
+if [[ "$desktop_backend" == xcb ]]; then
+  require_command xwininfo
+  if ! xwininfo -root >/dev/null 2>&1; then
+    die "desktop smoke cannot inspect the X11 root window on DISPLAY=$DISPLAY"
+  fi
+  LC_ALL=C xwininfo -root -tree 2>/dev/null \
+    | awk '/"Portable Comfy"/ && /"portable-comfy" "portable-comfy"/ {print $1}' \
+    | sort -u >"$before_windows"
+fi
 
 debug_port="$("$python" - <<'PY'
 import socket
@@ -160,12 +169,29 @@ surface_ack="$temporary/surface-validated"
 surface_png="$temporary/webengine-surface.png"
 rm -f -- "$frontend_ready" "$surface_ack" "$surface_png"
 
-log "starting the actual AppImage desktop smoke on XCB with loopback DevTools"
+desktop_environment=(
+  -u QT_QPA_PLATFORM
+  -u QT_XCB_GL_INTEGRATION
+  -u QT_QUICK_BACKEND
+  -u QTWEBENGINE_CHROMIUM_FLAGS
+)
+if [[ "$desktop_backend" == wayland ]]; then
+  # Prove this path does not silently fall back through DISPLAY/XWayland. The
+  # desktop-name variables are removed only in this diagnostic mode so Qt does
+  # not load a GTK platform theme from the invoking IDE/Snap environment.
+  desktop_environment+=(
+    -u DISPLAY
+    -u GDK_BACKEND
+    -u XDG_CURRENT_DESKTOP
+    -u DESKTOP_SESSION
+    -u GNOME_DESKTOP_SESSION_ID
+    QT_QPA_PLATFORM=wayland
+    QT_STYLE_OVERRIDE=Fusion
+  )
+fi
+log "starting the actual AppImage desktop smoke on $desktop_backend with loopback DevTools"
 setsid env \
-  -u QT_QPA_PLATFORM \
-  -u QT_XCB_GL_INTEGRATION \
-  -u QT_QUICK_BACKEND \
-  -u QTWEBENGINE_CHROMIUM_FLAGS \
+  "${desktop_environment[@]}" \
   APPIMAGE_EXTRACT_AND_RUN=1 \
   PORTABLE_COMFY_ROOT="$root" \
   PORTABLE_COMFY_DESKTOP_SMOKE_READY="$frontend_ready" \
@@ -179,7 +205,8 @@ window_id=""
 window_width=""
 window_height=""
 
-while [[ ! -f "$frontend_ready" || -z "$window_id" ]]; do
+while [[ ! -f "$frontend_ready" \
+  || ("$desktop_backend" == xcb && -z "$window_id") ]]; do
   if ! kill -0 "$desktop_pid" 2>/dev/null; then
     wait "$desktop_pid" || true
     desktop_pid=""
@@ -197,7 +224,7 @@ except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
 PY
 )"
   fi
-  if [[ -f "$frontend_ready" ]]; then
+  if [[ "$desktop_backend" == xcb && -f "$frontend_ready" ]]; then
     while IFS= read -r candidate; do
       [[ -n "$candidate" ]] || continue
       grep -Fqx -- "$candidate" "$before_windows" && continue
@@ -218,7 +245,7 @@ PY
   fi
   if ((SECONDS >= desktop_deadline)); then
     sed -n '1,240p' "$desktop_log" >&2
-    die "AppImage did not present a loaded, mapped desktop window within ${timeout_seconds}s"
+    die "AppImage did not present a loaded $desktop_backend surface within ${timeout_seconds}s"
   fi
   sleep 0.1
 done
@@ -229,7 +256,11 @@ if ! python3 "$SCRIPT_DIR/verify_webengine_surface.py" \
   die "AppImage WebEngine viewport did not render usable pixels"
 fi
 touch -- "$surface_ack"
-log "validated mapped desktop window $window_id (${window_width}x${window_height}) and rendered WebEngine pixels"
+if [[ "$desktop_backend" == xcb ]]; then
+  log "validated mapped desktop window $window_id (${window_width}x${window_height}) and rendered WebEngine pixels"
+else
+  log "validated native Wayland WebEngine document and rendered pixels without X11 inspection"
+fi
 
 while kill -0 "$desktop_pid" 2>/dev/null; do
   if ((SECONDS >= desktop_deadline)); then
@@ -252,4 +283,4 @@ fi
 if [[ -n "$owned_server_pid" ]] && kill -0 "$owned_server_pid" 2>/dev/null; then
   die "desktop window closed but owned ComfyUI server PID $owned_server_pid is still alive"
 fi
-log "artifact smoke passed: API, node registry, compiled frontend, mapped rendered AppImage window, and owned-server shutdown"
+log "artifact smoke passed: API, node registry, compiled frontend, rendered $desktop_backend AppImage surface, and owned-server shutdown"
