@@ -197,11 +197,25 @@ def test_candidate_preflight_uses_candidate_python_without_node_runtime(
     portable_root: PortablePaths, tmp_path: Path
 ) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
+    scratch_ready: list[bool] = []
 
     def capture(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs["env"]))  # type: ignore[arg-type]
+        environment = kwargs["env"]  # type: ignore[assignment]
+        calls.append((command, environment))  # type: ignore[arg-type]
+        if "--quick-test-for-ci" in command:
+            scratch_ready.append(
+                all(
+                    Path(command[command.index(option) + 1]).is_dir()
+                    for option in (
+                        "--base-directory",
+                        "--user-directory",
+                        "--temp-directory",
+                    )
+                )
+                and Path(environment["XDG_CACHE_HOME"]).parent.is_dir()
+            )
         return subprocess.CompletedProcess(command, 0, "", "")
 
     updater = EnvironmentUpdater(
@@ -217,6 +231,7 @@ def test_candidate_preflight_uses_candidate_python_without_node_runtime(
         assert "PIP_TARGET" not in environment
         assert "PYTHONPATH" not in environment
         assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert scratch_ready == [True]
 
 
 def test_environment_with_new_python_torch_cuda_is_accepted(

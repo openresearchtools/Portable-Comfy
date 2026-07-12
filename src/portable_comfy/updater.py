@@ -508,6 +508,8 @@ class EnvironmentUpdater:
         candidate_prefix = candidate / "runtime" / "python"
         scratch = bundle.root / "preflight"
         scratch.mkdir()
+        for directory in ("cache", "data", "temp", "user"):
+            (scratch / directory).mkdir()
         self.paths.repair_runtime_metadata(candidate_prefix)
         python = self.paths.python_executable(prefix=candidate_prefix)
         environment = self.paths.server_environment(
