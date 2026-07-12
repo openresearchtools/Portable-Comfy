@@ -8,6 +8,7 @@ import pytest
 
 from scripts.verify_webengine_surface import (
     SurfaceError,
+    capture_validated_surface,
     png_luminance,
     validate_surface,
 )
@@ -51,3 +52,25 @@ def test_uniform_webengine_png_cannot_pass_surface_validation(tmp_path: Path) ->
     stats = png_luminance(screenshot)
     with pytest.raises(SurfaceError, match="blank or uniform"):
         validate_surface(stats)
+
+
+def test_capture_waits_past_loading_splash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    screenshot = tmp_path / "rendered.png"
+    attempts = 0
+
+    def capture(_endpoint: str, output: Path, _timeout: float) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        _png(output, 900, 620, varied=attempts > 1)
+        return {"title": "ComfyUI"}
+
+    monkeypatch.setattr("scripts.verify_webengine_surface.capture_surface", capture)
+    document, stats = capture_validated_surface(
+        "http://127.0.0.1:1", screenshot, 1, retry_interval=0
+    )
+
+    assert attempts == 2
+    assert document == {"title": "ComfyUI"}
+    assert stats["luminance_stddev"] > 0.005

@@ -382,6 +382,37 @@ def validate_surface(stats: dict[str, float | int]) -> None:
         raise SurfaceError(f"WebEngine viewport is blank or uniform: {stats}")
 
 
+def capture_validated_surface(
+    endpoint: str,
+    output: Path,
+    timeout: float,
+    *,
+    retry_interval: float = 0.2,
+) -> tuple[dict[str, Any], dict[str, float | int]]:
+    """Wait for asynchronous frontend startup to produce a usable viewport."""
+
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SurfaceError(
+                f"WebEngine viewport did not become usable within {timeout:g}s: "
+                f"{last_error}"
+            ) from last_error
+        try:
+            document = capture_surface(endpoint, output, remaining)
+            stats = png_luminance(output)
+            validate_surface(stats)
+            return document, stats
+        except (OSError, SurfaceError, ValueError) as error:
+            last_error = error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            continue
+        time.sleep(min(retry_interval, remaining))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("endpoint", help="loopback Qt WebEngine DevTools HTTP endpoint")
@@ -391,9 +422,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     try:
-        document = capture_surface(args.endpoint, args.output, args.timeout)
-        stats = png_luminance(args.output)
-        validate_surface(stats)
+        document, stats = capture_validated_surface(
+            args.endpoint, args.output, args.timeout
+        )
     except (OSError, SurfaceError, ValueError) as error:
         print(f"webengine surface verification failed: {error}", file=sys.stderr)
         return 1
