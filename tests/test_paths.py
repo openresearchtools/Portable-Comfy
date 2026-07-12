@@ -39,7 +39,26 @@ def test_create_layout_and_workflow_link(tmp_path: Path) -> None:
     assert paths.workflow_link.resolve() == paths.workflows.resolve()
     config = paths.extra_model_paths.read_text(encoding="utf-8")
     assert "base_path: ../ComfyUI" in config
+    manager = paths.manager_config.read_text(encoding="utf-8")
+    assert "use_uv = false" in manager
+    assert "use_unified_resolver = false" in manager
     paths.create_layout()  # idempotent
+
+
+def test_layout_forces_manager_away_from_nonpersistent_uv_installs(
+    tmp_path: Path,
+) -> None:
+    paths = PortablePaths(tmp_path / "portable")
+    paths.manager_config.parent.mkdir(parents=True)
+    paths.manager_config.write_text(
+        "[default]\nuse_uv = true\nuse_unified_resolver = true\nchannel_url = keep-me\n",
+        encoding="utf-8",
+    )
+    paths.create_layout()
+    value = paths.manager_config.read_text(encoding="utf-8")
+    assert "use_uv = false" in value
+    assert "use_unified_resolver = false" in value
+    assert "channel_url = keep-me" in value
 
 
 def test_layout_refuses_wrong_link_or_real_directory(tmp_path: Path) -> None:
@@ -87,11 +106,30 @@ def test_environment_discards_pyinstaller_and_virtualenv_paths(
             "LD_LIBRARY_PATH_ORIG": "/host/lib",
         }
     )
-    assert "PYTHONPATH" not in env and "VIRTUAL_ENV" not in env
+    assert env["PYTHONPATH"] == str(portable_root.custom_node_site_packages)
+    assert "VIRTUAL_ENV" not in env
     assert env["PYTHONHOME"] == str(portable_root.python_prefix)
     assert env["LD_LIBRARY_PATH"] == f"{portable_root.python_prefix / 'lib'}:/host/lib"
     assert "/pyinstaller" not in env["LD_LIBRARY_PATH"]
     assert env["CM_USE_PYGIT2"] == "1"
+    assert env["PIP_TARGET"] == str(portable_root.custom_node_site_packages)
+    assert str(portable_root.custom_node_bin) in env["PATH"]
+
+
+def test_candidate_environment_can_exclude_persistent_node_overlay(
+    portable_root: PortablePaths,
+) -> None:
+    candidate = portable_root.state / "candidate/ComfyUI"
+    prefix = candidate / "runtime/python"
+    env = portable_root.server_environment(
+        python_prefix=prefix,
+        comfyui_path=candidate,
+        include_node_overlay=False,
+    )
+    assert "PYTHONPATH" not in env
+    assert "PIP_TARGET" not in env
+    assert env["PYTHONHOME"] == str(prefix)
+    assert env["COMFYUI_PATH"] == str(candidate)
 
 
 def test_runtime_metadata_repair_handles_move_and_new_pip_scripts(
@@ -105,13 +143,14 @@ def test_runtime_metadata_repair_handles_move_and_new_pip_scripts(
     (bin_dir / "python3").write_text("binary placeholder", encoding="utf-8")
     script = bin_dir / "node-tool"
     script.write_text(
-        "#!/old/root/runtime/python/bin/python3\nprint('ok')\n", encoding="utf-8"
+        "#!/old/root/ComfyUI/runtime/python/bin/python3\nprint('ok')\n",
+        encoding="utf-8",
     )
     script.chmod(0o755)
     makefile = config_dir / "Makefile"
-    makefile.write_text("prefix=/old/root/runtime/python\n", encoding="utf-8")
+    makefile.write_text("prefix=/old/root/ComfyUI/runtime/python\n", encoding="utf-8")
     (paths.python_prefix / ".portable-comfy-prefix").write_text(
-        "/old/root/runtime/python\n", encoding="utf-8"
+        "/old/root/ComfyUI/runtime/python\n", encoding="utf-8"
     )
     changed = paths.repair_runtime_metadata()
     assert changed == 2
@@ -120,3 +159,26 @@ def test_runtime_metadata_repair_handles_move_and_new_pip_scripts(
     assert (paths.python_prefix / ".portable-comfy-prefix").read_text().strip() == str(
         paths.python_prefix
     )
+
+
+def test_runtime_repair_relocates_persistent_node_entrypoints(tmp_path: Path) -> None:
+    paths = PortablePaths(tmp_path / "Moved Portable")
+    paths.create_layout()
+    (paths.python_prefix / "bin").mkdir(parents=True)
+    (paths.python_prefix / "bin/python3").write_text("placeholder")
+    script = paths.custom_node_bin / "node-command"
+    script.write_text(
+        "#!/old/place/ComfyUI/runtime/python/bin/python3\nprint('node')\n",
+        encoding="utf-8",
+    )
+    editable = paths.custom_node_site_packages / "local-node.pth"
+    editable.write_text("/old/place/custom_nodes/local-node\n", encoding="utf-8")
+    (paths.custom_node_runtime / ".portable-comfy-root").write_text(
+        "/old/place\n", encoding="utf-8"
+    )
+
+    assert paths.repair_runtime_metadata() == 2
+    wrapper = script.read_text(encoding="utf-8")
+    assert wrapper.startswith("#!/bin/sh\n'''exec'")
+    assert "ComfyUI/runtime/python/bin/python3" in wrapper
+    assert str(paths.root / "custom_nodes/local-node") in editable.read_text()

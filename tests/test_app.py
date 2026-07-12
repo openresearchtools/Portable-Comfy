@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from portable_comfy.app import DesktopController, _menu, main, self_test
+from portable_comfy.app import (
+    DESKTOP_SMOKE_ACK_ENV,
+    DESKTOP_SMOKE_READY_ENV,
+    DesktopController,
+    _confirm_desktop_smoke_surface,
+    _menu,
+    main,
+    self_test,
+)
 from portable_comfy.locking import AlreadyRunningError, InstanceLock
 from portable_comfy.paths import PortablePaths
 
@@ -78,7 +88,12 @@ def test_native_menu_exposes_lifecycle_and_updater(tmp_path: Path) -> None:
         auto_start=False,
     )
     menus = _menu(controller)
-    assert [menu.title for menu in menus] == ["Server", "View", "Core", "Help"]
+    assert [menu.title for menu in menus] == [
+        "Server",
+        "View",
+        "Environment",
+        "Help",
+    ]
     assert [item.title for item in menus[0].items] == ["Start", "Stop", "Restart"]
     assert [item.title for item in menus[2].items] == ["Install bundle…"]
     controller._start()
@@ -122,3 +137,39 @@ def test_main_locks_before_runtime_repair(
 def test_smoke_rejects_disabled_autostart() -> None:
     with pytest.raises(SystemExit):
         main(["--smoke-test", "--no-auto-start"])
+
+
+def test_desktop_smoke_waits_for_external_surface_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = tmp_path / "frontend.ready"
+    acknowledgement = tmp_path / "pixels.valid"
+    monkeypatch.setenv(DESKTOP_SMOKE_READY_ENV, str(ready))
+    monkeypatch.setenv(DESKTOP_SMOKE_ACK_ENV, str(acknowledgement))
+
+    def pixel_probe() -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if (
+                ready.exists()
+                and ready.read_text(encoding="utf-8") == "frontend-loaded\n"
+            ):
+                acknowledgement.touch()
+                return
+            time.sleep(0.01)
+        raise AssertionError("desktop smoke ready marker was not written")
+
+    worker = threading.Thread(target=pixel_probe)
+    worker.start()
+    assert _confirm_desktop_smoke_surface(threading.Event(), timeout=2)
+    worker.join()
+    assert not ready.exists()
+    assert not acknowledgement.exists()
+
+
+def test_desktop_smoke_cannot_pass_without_external_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DESKTOP_SMOKE_READY_ENV, raising=False)
+    monkeypatch.delenv(DESKTOP_SMOKE_ACK_ENV, raising=False)
+    assert not _confirm_desktop_smoke_surface(threading.Event(), timeout=0.01)

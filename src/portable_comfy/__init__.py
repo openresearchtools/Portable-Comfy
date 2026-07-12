@@ -3,4 +3,4 @@
 from .paths import LayoutError, PortablePaths
 
 __all__ = ["LayoutError", "PortablePaths"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

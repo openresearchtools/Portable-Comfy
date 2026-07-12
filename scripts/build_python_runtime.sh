@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile upstream PSF CPython into the portable root without MPL build tooling.
+# Compile upstream PSF CPython into the atomic ComfyUI environment.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-portable_root="${1:-}"
+comfyui_root="${1:-}"
 shift || true
 work_dir="$REPO_ROOT/build/python"
 jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '2')}"
@@ -18,17 +18,17 @@ while (($#)); do
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$portable_root" ]] || die "usage: $0 PORTABLE_ROOT [--work-dir DIR] [--jobs N]"
-portable_root="$(absolute_path "$portable_root")"
+[[ -n "$comfyui_root" ]] || die "usage: $0 COMFYUI_ROOT [--work-dir DIR] [--jobs N]"
+comfyui_root="$(absolute_path "$comfyui_root")"
 work_dir="$(absolute_path "$work_dir")"
-prefix="$portable_root/runtime/python"
+prefix="$comfyui_root/runtime/python"
 cache_dir="${CACHE_DIR:-$REPO_ROOT/.cache/portable-comfy}"
 if [[ "$prefix$work_dir" =~ [[:space:]] ]]; then
   die "CPython's build system cannot install into whitespace-containing paths; build in a simple CI path (the finished runtime remains relocatable to paths with spaces)"
 fi
 
 require_command curl sha256sum tar make gcc file readelf
-mkdir -p -- "$cache_dir" "$work_dir" "$portable_root/runtime"
+mkdir -p -- "$cache_dir" "$work_dir" "$comfyui_root/runtime"
 archive="$cache_dir/Python-${PYTHON_VERSION}.tar.xz"
 download_verified "$PYTHON_URL" "$archive" "$PYTHON_SHA256"
 safe_rm_tree "$work_dir/source"

@@ -115,12 +115,7 @@ done
 log "verified frozen launcher libpython and Qt runtime libraries"
 cp -a -- "$work_dir/pyinstaller-dist/portable-comfy/." "$appdir/usr/lib/portable-comfy/"
 
-cat >"$appdir/usr/bin/portable-comfy" <<'EOF'
-#!/bin/sh
-set -eu
-APPDIR=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
-exec "$APPDIR/usr/lib/portable-comfy/portable-comfy" "$@"
-EOF
+cp -- "$REPO_ROOT/packaging/appimage-launcher.sh" "$appdir/usr/bin/portable-comfy"
 chmod 0755 "$appdir/usr/bin/portable-comfy"
 ln -s usr/bin/portable-comfy "$appdir/AppRun"
 cp -- "$REPO_ROOT/packaging/Portable-Comfy.desktop" \

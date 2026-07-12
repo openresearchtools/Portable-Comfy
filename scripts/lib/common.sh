@@ -33,6 +33,18 @@ verify_runtime_constraints() {
     || die "runtime constraints do not match RUNTIME_LOCK_SHA256"
 }
 
+environment_generation_id() {
+  local cuda_slug="${CUDA_VERSION//./}"
+  printf 'comfyui-v%s-%s-frontend-%s-%s-python-%s-cu%s\n' \
+    "$COMFY_VERSION" "${COMFY_COMMIT:0:12}" \
+    "$FRONTEND_VERSION" "${FRONTEND_COMMIT:0:12}" \
+    "$PYTHON_VERSION" "$cuda_slug"
+}
+
+environment_bundle_basename() {
+  printf 'Portable-Comfy-environment-v%s\n' "$COMFY_VERSION"
+}
+
 absolute_path() {
   local path="$1"
   if [[ "$path" = /* ]]; then
@@ -71,7 +83,8 @@ create_deterministic_tar_gz() {
   name="$(basename -- "$source_dir")"
   mkdir -p -- "$(dirname -- "$archive")"
   rm -f -- "$archive" "$archive.part"
-  TZ=UTC tar --sort=name --format=posix --owner=0 --group=0 --numeric-owner \
+  TZ=UTC tar --sort=name --format=posix --hard-dereference \
+    --owner=0 --group=0 --numeric-owner \
     --mtime="@${SOURCE_DATE_EPOCH}" --pax-option=delete=atime,delete=ctime \
     -C "$parent" -cf - "$name" | gzip -n -9 >"$archive.part"
   mv -f -- "$archive.part" "$archive"
@@ -82,7 +95,8 @@ create_deterministic_contents_tar_gz() {
   local source_dir="$1" archive="$2"
   mkdir -p -- "$(dirname -- "$archive")"
   rm -f -- "$archive" "$archive.part"
-  TZ=UTC tar --sort=name --format=posix --owner=0 --group=0 --numeric-owner \
+  TZ=UTC tar --sort=name --format=posix --hard-dereference \
+    --owner=0 --group=0 --numeric-owner \
     --mtime="@${SOURCE_DATE_EPOCH}" --pax-option=delete=atime,delete=ctime \
     -C "$source_dir" -cf - . | gzip -n -9 >"$archive.part"
   mv -f -- "$archive.part" "$archive"

@@ -6,6 +6,7 @@ IFS=$'\n\t'
 # A preflight must be observational: imports such as torch -> pickletools must
 # never add bytecode to a payload after its complete-file manifest is sealed.
 export PYTHONDONTWRITEBYTECODE=1
+unset PORTABLE_COMFY_NODE_SITE_PACKAGES PIP_TARGET PYTHONPATH VIRTUAL_ENV
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
@@ -23,9 +24,13 @@ done
 target="$(absolute_path "$target")"
 temporary=""
 extension_temp=""
+overlay_test_dir=""
+overlay_test_pth=""
 cleanup() {
   [[ -z "$temporary" ]] || rm -rf -- "$temporary"
   [[ -z "$extension_temp" ]] || rm -rf -- "$extension_temp"
+  [[ -z "$overlay_test_pth" ]] || rm -f -- "$overlay_test_pth"
+  [[ -z "$overlay_test_dir" ]] || rm -rf -- "$overlay_test_dir"
 }
 trap cleanup EXIT
 if [[ -f "$target" ]]; then
@@ -41,14 +46,21 @@ else
   die "target does not exist: $target"
 fi
 
-required_dirs=(ComfyUI ComfyUI/frontend custom_nodes models input output temp workflows user logs config manifest runtime)
+required_dirs=(
+  ComfyUI ComfyUI/frontend ComfyUI/runtime custom_nodes
+  custom_node_runtime custom_node_runtime/bin custom_node_runtime/site-packages
+  models input output temp workflows user logs config manifest
+)
 for path in "${required_dirs[@]}"; do
   [[ -d "$root/$path" ]] || die "portable layout is missing directory: $path"
 done
+[[ ! -e "$root/runtime" && ! -L "$root/runtime" ]] \
+  || die "legacy top-level runtime is outside the atomic ComfyUI environment"
 [[ -s "$root/ComfyUI/main.py" && -s "$root/ComfyUI/frontend/index.html" ]] \
   || die "Core or frontend entrypoint is missing"
-[[ -f "$root/manifest/runtime.json" && -f "$root/manifest/core.json" ]] \
-  || die "portable manifests are missing"
+[[ -f "$root/manifest/environment.json" \
+   && -f "$root/manifest/environment-checksums.sha256" ]] \
+  || die "portable environment manifests are missing"
 taesd_models=(
   taef1_decoder.safetensors taef1_encoder.safetensors
   taesd3_decoder.safetensors taesd3_encoder.safetensors
@@ -65,15 +77,43 @@ done
   || die "workflow symlink has the wrong target"
 [[ "$(realpath -m "$root/user/default/workflows")" == "$(realpath -m "$root/workflows")" ]] \
   || die "workflow symlink escapes or resolves incorrectly"
+manager_config="$root/user/__manager/config.ini"
+if [[ -f "$manager_config" ]]; then
+  python3 - "$manager_config" <<'PY'
+import configparser, sys
+value = configparser.ConfigParser()
+value.read(sys.argv[1], encoding="utf-8")
+assert not value.getboolean("default", "use_uv", fallback=True)
+assert not value.getboolean("default", "use_unified_resolver", fallback=True)
+PY
+fi
 
-python3 - "$root/manifest/runtime.json" <<PY
+environment_verify_args=("$root" --portable-root)
+if ((structural)); then
+  environment_verify_args+=(--structural)
+fi
+python3 "$SCRIPT_DIR/verify_environment_bundle.py" "${environment_verify_args[@]}"
+python3 - "$root/manifest/environment.json" <<PY
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
-expected = {"python": "$PYTHON_VERSION", "torch": "$TORCH_VERSION", "cuda": "$CUDA_VERSION", "platform": "linux-x86_64", "requirements_lock_sha256": "$RUNTIME_LOCK_SHA256"}
-assert value == expected, (value, expected)
+assert value["generation_id"] == "$(environment_generation_id)"
+assert value["core"] == {
+    "version": "$COMFY_VERSION", "tag": "$COMFY_TAG", "commit": "$COMFY_COMMIT"
+}
+assert value["frontend"] == {
+    "version": "$FRONTEND_VERSION", "commit": "$FRONTEND_COMMIT"
+}
+assert value["runtime"] == {
+    "python": "$PYTHON_VERSION",
+    "torch": "$TORCH_VERSION",
+    "torchvision": "$TORCHVISION_VERSION",
+    "torchaudio": "$TORCHAUDIO_VERSION",
+    "cuda": "$CUDA_VERSION",
+    "platform": "linux-x86_64",
+    "requirements_lock_path": "ComfyUI/runtime/requirements.lock",
+    "requirements_lock_sha256": "$RUNTIME_LOCK_SHA256",
+}
 PY
-python3 "$SCRIPT_DIR/verify_core_bundle.py" "$root" \
-  --manifest manifest/core.json --checksums manifest/core-checksums.sha256
 python3 "$SCRIPT_DIR/verify_file_manifest.py" "$root"
 
 while IFS= read -r -d '' link; do
@@ -85,41 +125,55 @@ while IFS= read -r -d '' link; do
 done < <(find "$root" -type l -print0)
 
 if ((structural == 0)); then
-  python="$root/runtime/python/bin/python-portable"
+  prefix="$root/ComfyUI/runtime/python"
+  python="$prefix/bin/python-portable"
   appimage="$root/Portable-Comfy.AppImage"
   [[ -x "$python" ]] || die "portable Python launcher is missing"
   [[ -x "$appimage" ]] || die "AppImage is missing or not executable"
-  [[ -x "$root/runtime/python/bin/repair-portable-entrypoints" ]] \
+  [[ -x "$prefix/bin/repair-portable-entrypoints" ]] \
     || die "runtime relocation repair tool is missing"
-  "$root/runtime/python/bin/repair-portable-entrypoints"
-  [[ "$(cat "$root/runtime/python/.portable-comfy-prefix")" == "$(realpath "$root/runtime/python")" ]] \
+  "$prefix/bin/repair-portable-entrypoints"
+  [[ "$(cat "$prefix/.portable-comfy-prefix")" == "$(realpath "$prefix")" ]] \
     || die "runtime prefix stamp was not repaired after relocation"
-  if ldd "$root/runtime/python/bin/python3" | grep -q 'not found'; then
-    ldd "$root/runtime/python/bin/python3" >&2
+  if ldd "$prefix/bin/python3" | grep -q 'not found'; then
+    ldd "$prefix/bin/python3" >&2
     die "portable Python has unresolved libraries"
   fi
   "$python" - "$root" <<PY
 import importlib.util, json, pathlib, platform, sys, sysconfig
 import torch, torchvision, torchaudio
 root = pathlib.Path(sys.argv[1]).resolve()
+prefix = root / "ComfyUI/runtime/python"
 assert platform.python_version() == "$PYTHON_VERSION"
 assert torch.__version__ == "$TORCH_VERSION"
 assert torchvision.__version__ == "$TORCHVISION_VERSION"
 assert torchaudio.__version__ == "$TORCHAUDIO_VERSION"
 assert torch.version.cuda == "$CUDA_VERSION"
-assert pathlib.Path(sys.prefix).resolve() == root / "runtime/python"
-assert pathlib.Path(sysconfig.get_path("purelib")).resolve().is_relative_to(root / "runtime/python")
+assert pathlib.Path(sys.prefix).resolve() == prefix
+assert pathlib.Path(sysconfig.get_path("purelib")).resolve().is_relative_to(prefix)
 for name, value in sysconfig.get_paths().items():
     if value and pathlib.Path(value).is_absolute():
-        assert pathlib.Path(value).resolve().is_relative_to(root / "runtime/python"), (name, value)
+        assert pathlib.Path(value).resolve().is_relative_to(prefix), (name, value)
 for name in ("BINDIR", "LIBDIR", "INCLUDEPY", "CONFINCLUDEPY", "LIBPL"):
     value = sysconfig.get_config_var(name)
     if value:
-        assert pathlib.Path(value).resolve().is_relative_to(root / "runtime/python"), (name, value)
+        assert pathlib.Path(value).resolve().is_relative_to(prefix), (name, value)
 assert importlib.util.find_spec("comfyui_manager")
 assert importlib.util.find_spec("pygit2")
 print(json.dumps({"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda}))
 PY
+  overlay="$root/custom_node_runtime/site-packages"
+  overlay_test_dir="$(mktemp -d "$overlay/.portable-overlay-test.XXXXXX")"
+  mkdir -p -- "$overlay_test_dir/modules"
+  printf 'SENTINEL = 42\n' >"$overlay_test_dir/modules/portable_overlay_test.py"
+  overlay_test_pth="$(mktemp --suffix=.pth "$overlay/.portable-comfy-preflight.XXXXXX")"
+  printf '%s/modules\n' "$(basename -- "$overlay_test_dir")" >"$overlay_test_pth"
+  env -u PYTHONPATH PORTABLE_COMFY_NODE_SITE_PACKAGES="$overlay" \
+    "$python" -c 'import portable_overlay_test as value; assert value.SENTINEL == 42'
+  rm -f -- "$overlay_test_pth"
+  rm -rf -- "$overlay_test_dir"
+  overlay_test_pth=""
+  overlay_test_dir=""
   require_command cc
   extension_temp="$(mktemp -d "${TMPDIR:-/tmp}/Portable Comfy extension.XXXXXX")"
   extension_dir="$extension_temp/native-extension"

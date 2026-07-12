@@ -29,14 +29,22 @@ def portable_root(tmp_path: Path) -> PortablePaths:
     (paths.comfyui / "frontend").mkdir(parents=True)
     (paths.comfyui / "main.py").write_text("# test core\n", encoding="utf-8")
     (paths.frontend / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
-    paths.runtime_manifest.write_text(
+    paths.environment_manifest.write_text(
         json.dumps(
             {
-                "python": "3.13.12",
-                "torch": "2.12.0+cu130",
-                "cuda": "13.0",
-                "platform": "linux-x86_64",
-                "requirements_lock_sha256": "a" * 64,
+                "schema_version": 2,
+                "bundle_type": "environment",
+                "generation_id": "fixture-environment",
+                "runtime": {
+                    "python": "3.14.1",
+                    "torch": "3.0.0+cu140",
+                    "torchvision": "0.30.0+cu140",
+                    "torchaudio": "3.0.0+cu140",
+                    "cuda": "14.0",
+                    "platform": "linux-x86_64",
+                    "requirements_lock_path": "ComfyUI/runtime/requirements.lock",
+                    "requirements_lock_sha256": "a" * 64,
+                },
             }
         ),
         encoding="utf-8",

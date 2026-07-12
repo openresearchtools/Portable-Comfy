@@ -20,10 +20,47 @@ from portable_comfy import __version__
 from portable_comfy.locking import AlreadyRunningError, InstanceLock
 from portable_comfy.paths import LayoutError, PortablePaths
 from portable_comfy.supervisor import ServerError, ServerSupervisor
-from portable_comfy.updater import CoreUpdater, UpdateError
+from portable_comfy.updater import EnvironmentUpdater, UpdateError
 
 
 LOGGER = logging.getLogger("portable_comfy")
+DESKTOP_SMOKE_READY_ENV = "PORTABLE_COMFY_DESKTOP_SMOKE_READY"
+DESKTOP_SMOKE_ACK_ENV = "PORTABLE_COMFY_DESKTOP_SMOKE_ACK"
+
+
+def _confirm_desktop_smoke_surface(
+    closing: threading.Event, *, timeout: float = 30.0
+) -> bool:
+    """Wait for external mapped-window and rendered-surface smoke validation."""
+
+    ready_value = os.environ.get(DESKTOP_SMOKE_READY_ENV)
+    ack_value = os.environ.get(DESKTOP_SMOKE_ACK_ENV)
+    if not ready_value or not ack_value:
+        LOGGER.error("desktop smoke requires both ready and acknowledgement paths")
+        return False
+
+    ready = Path(ready_value)
+    acknowledgement = Path(ack_value)
+    try:
+        ready.parent.mkdir(parents=True, exist_ok=True)
+        acknowledgement.unlink(missing_ok=True)
+        ready.write_text("frontend-loaded\n", encoding="utf-8")
+        deadline = time.monotonic() + timeout
+        while not closing.is_set() and time.monotonic() < deadline:
+            if acknowledgement.is_file():
+                return True
+            time.sleep(0.1)
+        LOGGER.error("desktop smoke surface was not externally validated")
+        return False
+    except OSError:
+        LOGGER.exception("desktop smoke surface handshake failed")
+        return False
+    finally:
+        for marker in (ready, acknowledgement):
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.exception("could not remove desktop smoke marker %s", marker)
 
 
 def _page(title: str, message: str, *, error: bool = False, busy: bool = False) -> str:
@@ -50,7 +87,7 @@ class DesktopController:
         window: Any,
         paths: PortablePaths,
         supervisor: ServerSupervisor,
-        updater: CoreUpdater,
+        updater: EnvironmentUpdater,
         *,
         auto_start: bool,
         desktop_smoke: bool = False,
@@ -72,7 +109,7 @@ class DesktopController:
             self.window.load_html(
                 _page(
                     "Server stopped",
-                    "Use Server → Start to launch the bundled ComfyUI Core.",
+                    "Use Server → Start to launch the bundled ComfyUI environment.",
                 )
             )
 
@@ -104,7 +141,7 @@ class DesktopController:
             directory=str(self.paths.root),
             allow_multiple=False,
             file_types=(
-                "Portable Comfy Core (*.tar.gz;*.tgz)",
+                "Portable Comfy Environment (*.tar.gz;*.tgz)",
                 "All files (*.*)",
             ),
         )
@@ -112,7 +149,7 @@ class DesktopController:
             return
         archive = Path(selected[0])
         if not self.window.create_confirmation_dialog(
-            "Install Core bundle",
+            "Install environment bundle",
             f"Validate and install {archive.name}?\n\n"
             "Models, custom nodes, workflows, user data and their Python packages "
             "will not be replaced.",
@@ -128,19 +165,19 @@ class DesktopController:
             else:
                 self.window.load_html(
                     _page(
-                        "Core update installed",
+                        "Environment update installed",
                         f"ComfyUI {result.version} is installed. Use Server → Start when ready.",
                     )
                 )
 
-        self._background("Installing Core update", operation)
+        self._background("Installing environment update", operation)
 
     def about(self) -> None:
         self.window.create_confirmation_dialog(
             "About Portable Comfy",
             f"Portable Comfy {__version__}\n\n"
-            "ComfyUI Core, custom nodes, models, workflows and the Python/CUDA "
-            "runtime stay in the extracted portable directory.",
+            "The complete ComfyUI/Python/CUDA environment is replaceable. Custom "
+            "nodes, node packages, models, workflows and user data stay persistent.",
         )
 
     def closing(self) -> bool:
@@ -229,7 +266,12 @@ class DesktopController:
 
         def close_when_rendered() -> None:
             rendered = self.window.events.loaded.wait(30) if success else True
-            self.smoke_success = bool(success and rendered)
+            surface_confirmed = (
+                _confirm_desktop_smoke_surface(self._closing)
+                if success and rendered
+                else False
+            )
+            self.smoke_success = bool(success and rendered and surface_confirmed)
             # Give QtWebEngine one event-loop turn after its loaded signal.
             time.sleep(0.5)
             try:
@@ -257,7 +299,10 @@ def _menu(controller: DesktopController) -> list[Any]:
             ],
         ),
         Menu("View", [MenuAction("Reload", controller.reload)]),
-        Menu("Core", [MenuAction("Install bundle…", controller.install_bundle)]),
+        Menu(
+            "Environment",
+            [MenuAction("Install bundle…", controller.install_bundle)],
+        ),
         Menu("Help", [MenuAction("About Portable Comfy", controller.about)]),
     ]
 
@@ -350,7 +395,7 @@ def _run_desktop(
     )
     if window is None:
         raise RuntimeError("pywebview did not create the application window")
-    updater = CoreUpdater(paths, supervisor)
+    updater = EnvironmentUpdater(paths, supervisor)
     controller = DesktopController(
         window,
         paths,
@@ -435,7 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--desktop-smoke-test",
         action="store_true",
-        help="open Qt, load the healthy frontend, then close automatically",
+        help="run the externally validated Qt desktop smoke protocol",
     )
     parser.add_argument(
         "--self-test", action="store_true", help="validate layout without a runtime"
@@ -470,7 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             paths.create_layout()
             configure_logging(paths)
-            CoreUpdater.recover_interrupted_update(paths)
+            EnvironmentUpdater.recover_interrupted_update(paths)
             paths.validate_runtime()
             repaired = paths.repair_runtime_metadata()
             if repaired:

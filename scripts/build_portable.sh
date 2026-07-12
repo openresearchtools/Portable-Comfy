@@ -34,9 +34,11 @@ safe_rm_tree "$portable_root"
 mkdir -p -- "$portable_root" "$output_dir"
 "$SCRIPT_DIR/prepare_core.sh" "$portable_root/ComfyUI"
 
-# Persistent data is deliberately outside replaceable ComfyUI/ and runtime/.
+# Persistent data is deliberately outside the atomically replaceable ComfyUI/.
 data_dirs=(
-  custom_nodes input output temp workflows logs config manifest user/default
+  custom_nodes custom_node_runtime/bin custom_node_runtime/site-packages
+  input output temp workflows
+  logs config manifest user/default
   models/checkpoints models/configs models/loras models/vae models/text_encoders
   models/clip models/unet models/diffusion_models models/clip_vision models/style_models
   models/embeddings models/diffusers models/vae_approx models/controlnet models/t2i_adapter
@@ -50,7 +52,7 @@ for path in "${data_dirs[@]}"; do
 done
 ln -s ../../workflows "$portable_root/user/default/workflows"
 cat >"$portable_root/config/extra_model_paths.yaml" <<'EOF'
-# Optional model paths rooted in the replaceable Core tree. User-managed models
+# Optional model paths rooted in the replaceable environment tree. User-managed models
 # live in the top-level models/ directory selected by --base-directory.
 portable_comfy_core:
   base_path: ../ComfyUI
@@ -62,25 +64,20 @@ cp -- "$REPO_ROOT/LICENSE" "$portable_root/LICENSES/Portable-Comfy-GPL-3.0.txt"
 cp -- "$portable_root/ComfyUI/LICENSE" "$portable_root/LICENSES/ComfyUI-GPL-3.0.txt"
 "$SCRIPT_DIR/install_builtin_models.sh" "$portable_root"
 
-"$SCRIPT_DIR/write_runtime_manifest.sh" "$portable_root"
-SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" python3 "$SCRIPT_DIR/generate_manifest.py" "$portable_root" \
-  --output manifest/core.json --checksums manifest/core-checksums.sha256 \
-  --core-version "$COMFY_VERSION" --core-tag "$COMFY_TAG" --core-commit "$COMFY_COMMIT" \
-  --frontend-version "$FRONTEND_VERSION" --frontend-commit "$FRONTEND_COMMIT" \
-  --python "$PYTHON_VERSION" --torch "$TORCH_VERSION" --cuda "$CUDA_VERSION" \
-  --requirements-lock-sha256 "$RUNTIME_LOCK_SHA256"
-
 if ((skip_runtime == 0)); then
-  "$SCRIPT_DIR/build_python_runtime.sh" "$portable_root" --work-dir "$work_dir/python"
-  cp -- "$portable_root/runtime/python/LICENSE.txt" "$portable_root/LICENSES/CPython-PSF-2.0.txt"
-  "$SCRIPT_DIR/install_runtime_dependencies.sh" "$portable_root"
+  "$SCRIPT_DIR/build_python_runtime.sh" "$portable_root/ComfyUI" --work-dir "$work_dir/python"
+  cp -- "$portable_root/ComfyUI/runtime/python/LICENSE.txt" \
+    "$portable_root/LICENSES/CPython-PSF-2.0.txt"
+  "$SCRIPT_DIR/install_runtime_dependencies.sh" "$portable_root/ComfyUI"
 else
-  mkdir -p -- "$portable_root/runtime"
+  mkdir -p -- "$portable_root/ComfyUI/runtime"
+  cp -- "$REPO_ROOT/packaging/runtime-constraints.txt" \
+    "$portable_root/ComfyUI/runtime/requirements.lock"
   log "WARNING: --skip-runtime creates a structural-only staging tree"
 fi
 
 if ((skip_appimage == 0)); then
-  launcher_python="$portable_root/runtime/python/bin/python-portable"
+  launcher_python="$portable_root/ComfyUI/runtime/python/bin/python-portable"
   if ((skip_runtime)); then
     launcher_python="${BUILD_PYTHON:-python3}"
   fi
@@ -88,12 +85,20 @@ if ((skip_appimage == 0)); then
     --build-python "$launcher_python"
   if ((skip_runtime == 0)); then
     # Keep the shipped interpreter free of bytecode tied to the CI build path.
-    "$SCRIPT_DIR/repair_python_runtime.sh" "$portable_root/runtime/python"
+    "$SCRIPT_DIR/repair_python_runtime.sh" "$portable_root/ComfyUI/runtime/python"
   fi
 else
   log "WARNING: --skip-appimage creates a structural-only staging tree"
 fi
 
+SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" python3 \
+  "$SCRIPT_DIR/generate_environment_manifest.py" "$portable_root" \
+  --generation-id "$(environment_generation_id)" \
+  --core-version "$COMFY_VERSION" --core-tag "$COMFY_TAG" --core-commit "$COMFY_COMMIT" \
+  --frontend-version "$FRONTEND_VERSION" --frontend-commit "$FRONTEND_COMMIT" \
+  --python "$PYTHON_VERSION" --torch "$TORCH_VERSION" \
+  --torchvision "$TORCHVISION_VERSION" --torchaudio "$TORCHAUDIO_VERSION" \
+  --cuda "$CUDA_VERSION" --requirements-lock-sha256 "$RUNTIME_LOCK_SHA256"
 python3 "$SCRIPT_DIR/generate_file_manifest.py" "$portable_root"
 
 if ((skip_runtime || skip_appimage)); then

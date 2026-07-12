@@ -1,10 +1,10 @@
 # Building and testing
 
-The repository has a fast launcher test path and a slower pinned
-portable-runtime build. The CUDA workflow is manual because its intermediate
-tree and artifacts are several gigabytes.
+The repository has a fast launcher/manifest test path and a slower pinned
+portable-runtime build. The CUDA workflow is manual because both final
+artifacts and their intermediate trees are several gigabytes.
 
-## Local launcher tests
+## Local tests
 
 Use Python 3.13 and install the declared development/build extras:
 
@@ -18,7 +18,9 @@ portable-comfy --root /tmp/Portable-Comfy --self-test
 ```
 
 The self-test is non-interactive and must not require a running ComfyUI server
-or display. It checks launcher configuration and portable-root invariants.
+or display. The manifest tests build a tiny structural environment archive and
+prove that persistent directories are excluded, every Core/runtime file is
+bound, and tampering or unsafe links are rejected.
 
 For a full build on Ubuntu, install the native CPython/AppImage prerequisites:
 
@@ -40,12 +42,15 @@ scripts/build_portable.sh \
   --output-dir "$PWD/artifacts" \
   --work-dir /path/with/ample/free-space
 
-scripts/build_core_bundle.sh \
+scripts/build_environment_bundle.sh \
   --output-dir "$PWD/artifacts" \
   --work-dir /path/with/ample/free-space
 
 scripts/preflight_portable.sh \
   artifacts/Portable-Comfy-linux-x86_64.tar.gz
+
+scripts/preflight_environment.sh \
+  artifacts/Portable-Comfy-environment-v0.27.0.tar.gz
 
 scripts/smoke_artifact.sh \
   artifacts/Portable-Comfy-linux-x86_64.tar.gz \
@@ -53,55 +58,79 @@ scripts/smoke_artifact.sh \
   --allow-no-gpu
 ```
 
-`build_portable.sh` also accepts `--skip-appimage` and `--skip-runtime` for
-targeted packaging development. Those modes are not release-equivalent. The
-normal build produces:
+`build_environment_bundle.sh` can reuse an already completed first-install
+staging tree instead of rebuilding CPython and CUDA packages:
+
+```bash
+scripts/build_environment_bundle.sh \
+  --source-root /build/Portable-Comfy \
+  --output-dir "$PWD/artifacts" \
+  --work-dir /path/on/the/same/filesystem
+```
+
+On one filesystem it stages hard links to the immutable completed `ComfyUI/`
+tree before archiving; it falls back to a copy across filesystems. It never
+copies models or other persistent directories. The Actions workflow uses this
+path so the two artifacts contain the exact same environment bytes.
+
+`build_portable.sh` accepts `--skip-appimage` and `--skip-runtime`, and the
+environment builder accepts `--structural`, for targeted packaging tests.
+Those modes are not release-equivalent. A normal build produces:
 
 ```text
 Portable-Comfy-linux-x86_64.tar.gz
-Portable-Comfy-core-v0.27.0.tar.gz
+Portable-Comfy-environment-v0.27.0.tar.gz
 ```
 
-The complete archive includes the AppImage, source-built portable CPython,
-CUDA-enabled Torch, pinned Core/frontend, persistent directory layout, and
-eight pinned TAESD preview encoder/decoder weights under `models/vae_approx/`.
-It does not include user checkpoints or other generation models. The Core
-archive contains only the transactional replaceable payload.
+The complete first-install archive contains the AppImage, atomic `ComfyUI/`
+environment, persistent directory layout, and eight pinned TAESD preview
+encoder/decoder weights under `models/vae_approx/`. It does not include user
+checkpoints or other generation models.
 
-The named baseline and every currently resolved Python distribution are exact
-pre-build pins in `packaging/runtime-constraints.txt`; the completed artifact
-also records the installed set in `manifest/runtime-requirements.lock`. This
-prevents ordinary transitive-version drift, but the full runtime is not claimed
-to be byte-for-byte reproducible because all wheel bytes/build tools are not
-yet hash-locked. The Core-only archive is built deterministically from
-checksummed source/frontend inputs.
+The environment archive contains one outer versioned directory, the complete
+`ComfyUI/` generation (Core, matching frontend, source-built Python, locked
+requirements and Torch/CUDA), and `manifest/environment.json` plus its checksum
+list. It excludes `models/`, `custom_nodes/`, `custom_node_runtime/`, workflows,
+user/input/output/temp data, config and logs.
+
+The named baseline and every currently resolved Core Python distribution are
+exact pre-build pins in `packaging/runtime-constraints.txt`. Each environment
+ships that exact file as `ComfyUI/runtime/requirements.lock`, records the
+installed set separately, and binds the lock path and digest in its schema-v2
+manifest. This prevents ordinary transitive-version drift. The artifacts are
+not claimed to be byte-for-byte reproducible because all wheel bytes and build
+tools are not yet hash-locked.
 
 ## GitHub Actions artifacts
 
 Run `.github/workflows/build-artifacts.yml` manually from the repository's
-Actions tab. It performs these independent gates:
+Actions tab. It performs these gates:
 
 1. Builds on Ubuntu 22.04 so generated native binaries retain the supported
-   glibc 2.35 baseline, and reclaims large unused SDKs to make room for the
-   unpacked CUDA and Qt trees.
-2. Builds the complete and Core-only archives using pinned versions.
-3. Runs structural preflight and records SHA-256 checksums.
-4. Uploads both archives with one-day retention and no additional compression.
-5. Starts a fresh job, downloads both uploaded artifacts, verifies their
-   checksums and Core manifest, and launches the complete artifact's server and
-   frozen desktop shell beneath Xvfb.
+   glibc 2.35 baseline, reclaiming unused hosted-runner SDKs first.
+2. Builds the complete first-install archive, then creates the environment
+   archive from that exact completed staging tree without reinstalling
+   dependencies.
+3. Preflights both archives after relocation and records their SHA-256 values.
+4. Uploads both multi-gigabyte archives with one-day retention and no redundant
+   outer compression.
+5. Starts a fresh Ubuntu 24.04 job, downloads both uploaded artifacts, verifies
+   the published checksums, independently preflights the environment archive,
+   installs it through the real transactional updater into an extracted
+   first-install tree, and then launches the complete artifact's server and
+   frozen desktop shell.
 
 GitHub's artifact service wraps uploaded files in its own downloadable
-container; `compression-level: 0` ensures it does not waste CPU or temporary
-space trying to recompress the inner `.tar.gz`. No workflow creates a GitHub
-Release or pushes generated binaries to the repository.
+container; `compression-level: 0` avoids trying to recompress the inner
+`.tar.gz`. No workflow creates a GitHub Release or pushes generated binaries to
+the repository.
 
 After a successful run, download the same short-lived files locally with the
 GitHub CLI (replace `RUN_ID` with the workflow run ID):
 
 ```bash
 gh run download RUN_ID --name Portable-Comfy-linux-x86_64
-gh run download RUN_ID --name Portable-Comfy-core-v0.27.0
+gh run download RUN_ID --name Portable-Comfy-environment-v0.27.0
 ```
 
 Actions artifacts consume account artifact storage even for a public
@@ -110,21 +139,35 @@ storage or per-artifact service limits. A failed upload is a distribution
 failure and must remain visible; the workflow must not silently omit CUDA or
 substitute a smaller CPU package.
 
-## What the smoke test proves
+## What the smoke tests prove
 
-The downloaded-artifact smoke job runs on a GitHub-hosted machine without an
-NVIDIA GPU. `--allow-no-gpu` permits ComfyUI's CPU fallback solely to check:
+The environment preflight verifies archive safety, the complete schema-v2 file
+and symlink manifest, requirements-lock identity, candidate-runtime relocation,
+pinned imports and a freshly compiled native extension. It runs the interpreter
+inside the candidate `ComfyUI/`, never the active/full archive's runtime.
 
-- archive integrity and relocatable paths;
-- the bundled interpreter, imports and a freshly compiled native extension
-  after relocation to a path containing spaces;
+The transactional-update smoke then uses `EnvironmentUpdater` itself to stage
+that downloaded archive, run the candidate's version/import, `pip check` and
+ComfyUI quick tests, atomically swap the complete generation, start and
+health-check it, and retain the old generation for rollback. Sentinels under
+`models/`, `custom_nodes/`, `workflows/`, `user/`, `output/` and
+`custom_node_runtime/` must remain byte-identical, and the activated runtime
+must import a module from the persistent node overlay. The workflow installs
+the same locked generation already present in the full archive, so this
+non-empty overlay also proves a compatible manifest passes the ABI guard.
+
+The downloaded first-install smoke test runs without an NVIDIA GPU and uses
+`--allow-no-gpu` solely to check:
+
+- complete-archive integrity and relocatable paths;
 - server startup and HTTP readiness;
-- the actual AppImage creating a Qt WebEngine window on Qt's offscreen platform,
-  loading the healthy compiled frontend, receiving its loaded event and
-  closing cleanly;
-- orderly launcher-driven shutdown.
+- the actual AppImage creating a mapped XCB Qt WebEngine window beneath Xvfb;
+- smoke-only loopback DevTools capture of the viewport to PNG plus usable-pixel
+  validation after the compiled frontend reports ready;
+- clean window closure and launcher-owned server shutdown with no surviving
+  server state or process.
 
-It does not prove CUDA inference, model correctness or third-party custom-node
-compatibility. Before wider distribution, test the same artifact on each
-supported Ubuntu version and on a Turing-or-newer NVIDIA host with an
+These checks do not prove CUDA inference, model correctness or third-party
+custom-node compatibility. Before wider distribution, test the same artifacts
+on every supported Ubuntu version and on a Turing-or-newer NVIDIA host with an
 R580-or-newer driver.

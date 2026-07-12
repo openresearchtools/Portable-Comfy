@@ -1,9 +1,9 @@
 # Architecture
 
-Portable Comfy separates immutable application code, a replaceable ComfyUI
-Core, and persistent user state. That boundary is what allows a Linux package
-to be both one-click and maintainable without redownloading models or custom
-nodes.
+Portable Comfy separates the frozen desktop launcher, one atomically
+replaceable ComfyUI environment generation, and persistent user/node state.
+That boundary permits Python and Torch updates without redownloading models or
+silently deleting custom nodes.
 
 ## Runtime and process model
 
@@ -12,7 +12,7 @@ desktop renderer. It locates the portable root beside itself, validates the
 layout, creates missing data directories and the workflow link, then starts:
 
 ```text
-runtime/python/bin/python3 ComfyUI/main.py
+ComfyUI/runtime/python/bin/python3 ComfyUI/main.py
     --base-directory <portable-root>
     --front-end-root <portable-root>/ComfyUI/frontend
     --listen 127.0.0.1
@@ -28,65 +28,111 @@ force termination when necessary.
 The launcher owns the process it starts. It must not kill an unrelated process
 that was already listening on the configured port.
 
-## Data boundary
+## Atomic environment and persistent data
 
-`ComfyUI/` is versioned application content. The top-level `custom_nodes/`,
-`models/`, `input/`, `output/`, `temp/`, `workflows/` and `user/` directories
-are persistent content. `runtime/python/` is also persistent because custom
-node dependencies are installed into its shared `site-packages`.
+The top-level `ComfyUI/` directory is one self-contained generation:
+
+```text
+ComfyUI/
+├── main.py and pinned Core source
+├── frontend/                     # matching compiled frontend
+└── runtime/
+    ├── python/                   # source-built CPython + locked packages
+    ├── requirements.lock         # exact committed constraints
+    ├── installed-requirements.txt
+    └── LICENSES/
+```
+
+An environment update swaps that complete directory. Core source and its
+interpreter can never be combined accidentally with a different generation's
+Torch or dependency set.
+
+The top-level `custom_nodes/`, `custom_node_runtime/`, `models/`, `input/`,
+`output/`, `temp/`, `workflows/` and `user/` directories are persistent. Node
+repositories stay in `custom_nodes/`; node-only Python packages that must
+survive an environment replacement stay in
+`custom_node_runtime/site-packages/`, with their console scripts under
+`custom_node_runtime/bin/`. They execute in the environment's Python
+process, so an environment update may still expose a real dependency or ABI
+incompatibility even though it never deletes this overlay.
+
+Before staging a non-empty overlay, the updater compares the candidate and
+active Python, Torch, torchvision, torchaudio, CUDA and platform values. A
+compatible Core/frontend/requirements update proceeds. An ABI-changing update
+is refused until the user moves aside or rebuilds the overlay; the updater does
+not guess that arbitrary compiled extensions are compatible.
+
+The launcher sets `PORTABLE_COMFY_NODE_SITE_PACKAGES`, `PYTHONPATH` and
+`PIP_TARGET` for the active server. A small `.pth` hook shipped in each base
+environment calls `site.addsitedir` on that location, which also processes
+`.pth` files installed inside the overlay. Candidate preflight intentionally
+omits these variables so a new generation is tested against only its locked
+base requirements.
 
 The portable root's `workflows/` directory contains the real files.
-`user/default/workflows` is a relative `../../workflows` symlink pointing
-back to it. The launcher repairs that link only when it is absent or already
-targets the expected directory; it must not overwrite unrelated user content.
+`user/default/workflows` is a relative `../../workflows` symlink pointing back
+to it. The launcher repairs that link only when it is absent or already targets
+the expected directory; it must not overwrite unrelated user content.
 
-## Core bundle contract
+## Environment bundle contract
 
-A Core bundle contains one complete, pinned `ComfyUI/` tree with its matching
-compiled frontend plus a machine-readable update manifest and checksums. The
-manifest identifies at least:
+An update archive has one outer directory named
+`Portable-Comfy-environment-v<version>/`. It may contain only:
 
-- the bundle schema and ComfyUI/frontend versions;
-- the Core source revision;
-- compatible Python, Torch/CUDA/platform and complete runtime-constraints
-  digest;
-- a file list constrained to the top-level `ComfyUI/` payload directory;
-- SHA-256 checksums for every replaceable `ComfyUI/` payload file.
+```text
+Portable-Comfy-environment-v<version>/
+├── ComfyUI/                       # complete candidate generation
+└── manifest/
+    ├── environment.json
+    └── environment-checksums.sha256
+```
+
+The schema-v2 manifest identifies the application and generation, pinned
+Core/frontend revisions, Python, Torch, torchvision, torchaudio, CUDA and
+platform values, plus the SHA-256-bound requirements lock. Its `files` list
+covers every regular file and safe relative symlink beneath `ComfyUI/`.
+Regular entries record size and SHA-256; symlink entries record the exact
+relative target. The checksum list covers every regular payload file.
+
+The verifier rejects absolute/traversal paths, escaping or dangling links,
+special files, unexpected top-level payload, missing/unlisted entries and any
+checksum, identity or lock mismatch. Persistent names such as `models/`,
+`custom_nodes/`, `workflows/` and `user/` are therefore impossible to smuggle
+into a valid update bundle.
 
 Installation is transactional:
 
-1. Reject path traversal, absolute paths, unexpected links, checksum failures,
-   schema mismatches and incompatible runtime requirements before activation.
-2. Extract to a staging directory on the same filesystem as `ComfyUI/`.
-3. Run the bundle's import/preflight check with `runtime/python/bin/python3`.
-4. Stop the owned server, durably write and fsync an activation journal, then
-   atomically move the current Core aside.
-5. Atomically activate the staged directory, update manifests and launch it.
-6. Commit and remove the journal only after the HTTP health check succeeds;
-   otherwise restore the previous directory and restart it.
+1. Safely extract and validate the complete candidate before changing the
+   active tree.
+2. Repair the candidate interpreter for its staged location and run import and
+   Core preflight checks with `ComfyUI/runtime/python/bin/python-portable` from
+   that candidate.
+3. Stop the owned server, durably write and fsync an activation journal, then
+   atomically move the current `ComfyUI/` generation aside.
+4. Atomically activate the candidate directory and its environment manifest.
+5. Launch and health-check the candidate. Commit only after success; otherwise
+   restore the previous complete generation and restart it.
 
 After an interrupted activation, the next startup acquires the instance lock
 and recovers from that journal before normal server startup. It restores the
-rollback Core and manifest files, while moving an uncommitted candidate to
-`state/recovered/` instead of deleting it.
+rollback environment and manifest files, while moving an uncommitted candidate
+to `state/recovered/` instead of deleting it.
 
-Only `ComfyUI/` participates in this transaction. Update code must never sync,
-delete or replace the portable data directories or node-only dependencies.
+The AppImage is outside this transaction. A launcher/UI update still requires
+a new complete first-install package; an environment update may change Core,
+frontend, Python, Torch/CUDA and locked Core requirements together.
 
-## Runtime updates
+## Python and CUDA portability
 
-Python 3.13.12, the Qt renderer, Torch 2.12.0+cu130, torchvision
-0.27.0+cu130 and torchaudio 2.11.0+cu130 form the initial runtime ABI. A Core
-bundle must declare compatibility with that baseline and the SHA-256 digest of
-the complete pinned Python constraints file. Changing any part of it requires
-a complete portable artifact and explicit migration; the Core menu is not
-allowed to mutate these foundational packages.
+The interpreter is built from upstream CPython source into
+`ComfyUI/runtime/python`. Python and libpython use relative runtime-library
+paths; remaining text metadata and pip entry points are repaired after the
+generation moves. GPU user-space libraries are provided by the pinned PyTorch
+wheels. `libcuda` and the kernel driver remain on the host.
 
-The interpreter is built from upstream CPython source into a prefix located
-inside the portable root. The launcher always invokes that interpreter by
-absolute path and clears ambient virtual-environment/user-site settings. GPU
-user-space libraries are provided by PyTorch wheels; `libcuda` and the kernel
-driver remain on the host.
+The initial generation uses Python 3.13.12, Torch 2.12.0+cu130, torchvision
+0.27.0+cu130 and torchaudio 2.11.0+cu130. The manifest binds these values and
+the complete requirements-lock digest to the exact ComfyUI tree.
 
 ## Custom-node trust and compatibility
 
@@ -95,7 +141,8 @@ can access the user's files, network and GPU with the same permissions as the
 application. Portability does not sandbox it.
 
 All conventional nodes share one interpreter, Torch installation and import
-space. Dependency conflicts therefore remain possible. A future profiles
-feature may materialize separate full runtimes, but pretending that arbitrary
-existing nodes have isolated environments would be incompatible with how they
-exchange models and tensors today.
+space, with the persistent node-package overlay added to that process.
+Dependency conflicts therefore remain possible. A future profiles feature may
+materialize separate full environments, but pretending that arbitrary existing
+nodes have isolated processes would be incompatible with how they exchange
+models and tensors today.
