@@ -72,3 +72,31 @@ def test_appimage_launcher_preserves_explicit_qt_overrides(tmp_path: Path) -> No
 
     for name, value in overrides.items():
         assert environment[name] == value
+
+
+def test_appimage_launcher_uses_native_wayland_without_display(
+    tmp_path: Path,
+) -> None:
+    environment = _launcher_environment(
+        tmp_path,
+        {
+            "WAYLAND_DISPLAY": "wayland-0",
+            "XDG_SESSION_TYPE": "wayland",
+            "XDG_CURRENT_DESKTOP": "ubuntu:GNOME",
+            "DESKTOP_SESSION": "ubuntu",
+            "GNOME_DESKTOP_SESSION_ID": "this-is-deprecated",
+            "GDK_BACKEND": "x11",
+        },
+    )
+
+    assert environment["QT_QPA_PLATFORM"] == "wayland"
+    assert environment["QT_STYLE_OVERRIDE"] == "Fusion"
+    assert environment["WAYLAND_DISPLAY"] == "wayland-0"
+    for name in (
+        "DISPLAY",
+        "XDG_CURRENT_DESKTOP",
+        "DESKTOP_SESSION",
+        "GNOME_DESKTOP_SESSION_ID",
+        "GDK_BACKEND",
+    ):
+        assert name not in environment

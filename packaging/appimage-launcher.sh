@@ -6,11 +6,17 @@ set -eu
 APPDIR=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 
 # Qt 6's Wayland/RHI auto-selection can produce a loaded WebEngine page without
-# ever presenting a usable window on NVIDIA systems. XCB plus software Qt Quick
-# rendering is the conservative portable baseline. Every value remains a user
-# override: an explicitly exported variable, including an empty one, wins.
+# ever presenting a usable window on NVIDIA systems. Prefer the proven XCB path
+# when XWayland is available, but remain usable on hardened Wayland sessions
+# that intentionally do not export DISPLAY. Every explicit user value wins.
+native_wayland_fallback=0
 if [ -z "${QT_QPA_PLATFORM+x}" ]; then
-  QT_QPA_PLATFORM=xcb
+  if [ -z "${DISPLAY:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    QT_QPA_PLATFORM=wayland
+    native_wayland_fallback=1
+  else
+    QT_QPA_PLATFORM=xcb
+  fi
   export QT_QPA_PLATFORM
 fi
 if [ -z "${QT_XCB_GL_INTEGRATION+x}" ]; then
@@ -24,6 +30,17 @@ fi
 if [ -z "${QTWEBENGINE_CHROMIUM_FLAGS+x}" ]; then
   QTWEBENGINE_CHROMIUM_FLAGS='--disable-gpu --disable-gpu-compositing'
   export QTWEBENGINE_CHROMIUM_FLAGS
+fi
+
+# The no-XWayland diagnostic path must not let a GTK platform theme inherited
+# from a Snap/IDE try to reconnect through X11 or consume sandbox-private
+# GSettings schemas. Fusion is fully bundled with Qt.
+if [ "$native_wayland_fallback" -eq 1 ]; then
+  unset GDK_BACKEND XDG_CURRENT_DESKTOP DESKTOP_SESSION GNOME_DESKTOP_SESSION_ID
+  if [ -z "${QT_STYLE_OVERRIDE+x}" ]; then
+    QT_STYLE_OVERRIDE=Fusion
+    export QT_STYLE_OVERRIDE
+  fi
 fi
 
 # Launching from a Snap-packaged IDE or terminal can leak GTK/GIO module paths
