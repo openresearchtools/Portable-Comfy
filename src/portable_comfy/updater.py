@@ -508,8 +508,17 @@ class EnvironmentUpdater:
         candidate_prefix = candidate / "runtime" / "python"
         scratch = bundle.root / "preflight"
         scratch.mkdir()
-        for directory in ("cache", "data", "temp", "user"):
-            (scratch / directory).mkdir()
+        for directory in (
+            "cache",
+            "data/custom_nodes",
+            "data/input",
+            "data/models",
+            "data/output",
+            "data/temp",
+            "temp",
+            "user",
+        ):
+            (scratch / directory).mkdir(parents=True, exist_ok=True)
         self.paths.repair_runtime_metadata(candidate_prefix)
         python = self.paths.python_executable(prefix=candidate_prefix)
         environment = self.paths.server_environment(

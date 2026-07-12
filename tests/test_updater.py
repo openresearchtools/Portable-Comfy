@@ -215,6 +215,10 @@ def test_candidate_preflight_uses_candidate_python_without_node_runtime(
                     )
                 )
                 and Path(environment["XDG_CACHE_HOME"]).parent.is_dir()
+                and (
+                    Path(command[command.index("--base-directory") + 1])
+                    / "custom_nodes"
+                ).is_dir()
             )
         return subprocess.CompletedProcess(command, 0, "", "")
 
