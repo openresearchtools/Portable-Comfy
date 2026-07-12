@@ -166,7 +166,9 @@ PY
   overlay_test_dir="$(mktemp -d "$overlay/.portable-overlay-test.XXXXXX")"
   mkdir -p -- "$overlay_test_dir/modules"
   printf 'SENTINEL = 42\n' >"$overlay_test_dir/modules/portable_overlay_test.py"
-  overlay_test_pth="$(mktemp --suffix=.pth "$overlay/.portable-comfy-preflight.XXXXXX")"
+  # CPython deliberately ignores hidden .pth files, so this probe must have a
+  # visible basename just like packages installed into the real node overlay.
+  overlay_test_pth="$(mktemp --suffix=.pth "$overlay/portable-comfy-preflight.XXXXXX")"
   printf '%s/modules\n' "$(basename -- "$overlay_test_dir")" >"$overlay_test_pth"
   env -u PYTHONPATH PORTABLE_COMFY_NODE_SITE_PACKAGES="$overlay" \
     "$python" -c 'import portable_overlay_test as value; assert value.SENTINEL == 42'
