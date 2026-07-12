@@ -148,6 +148,17 @@ Actions tab. It performs these gates:
 4. Uploads both multi-gigabyte archives with one-day retention and no redundant
    outer compression.
 
+The AppImage build also treats PyInstaller's final `COLLECT-00.toc` as the
+authoritative frozen-source ledger. `LICENSES/launcher-native-packages/`
+contains `provenance.tsv` for every TOC input (plus the four manually added
+Wayland libraries) and `packages.tsv` for every Debian-owned host input. An
+absolute source outside the launcher venv, portable CPython, repository and
+build-output trees must be owned by an installed Debian package or the build
+fails; each such package contributes its version and Debian copyright file.
+PyWebView's package hook contributes only its required JavaScript. Unused GTK,
+Android, Cocoa and WinForms backends and cross-platform binary payloads are
+excluded from the Qt-only launcher.
+
 The workflow has one build job. It does not install Xvfb or Weston, emulate a
 desktop, launch Qt WebEngine, or run GUI smoke tests on a hosted runner.
 

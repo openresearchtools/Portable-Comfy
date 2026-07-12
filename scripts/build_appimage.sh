@@ -78,17 +78,30 @@ log "freezing launcher with PyInstaller"
   --name portable-comfy \
   --distpath "$work_dir/pyinstaller-dist" --workpath "$work_dir/pyinstaller-work" \
   --specpath "$work_dir" --paths "$REPO_ROOT/src" \
-  --collect-data webview \
+  --exclude-module webview.platforms.gtk \
+  --exclude-module gi \
+  --exclude-module webview.platforms.android \
+  --exclude-module webview.platforms.cocoa \
+  --exclude-module webview.platforms.winforms \
   --hidden-import webview.platforms.qt \
   --hidden-import qtpy.QtCore --hidden-import qtpy.QtGui --hidden-import qtpy.QtWidgets \
   --hidden-import qtpy.QtNetwork --hidden-import qtpy.QtWebChannel \
   --hidden-import qtpy.QtWebEngineCore --hidden-import qtpy.QtWebEngineWidgets \
   "$REPO_ROOT/src/portable_comfy/__main__.py"
 frozen_root="$work_dir/pyinstaller-dist/portable-comfy/_internal"
+collect_toc="$work_dir/pyinstaller-work/portable-comfy/COLLECT-00.toc"
 frozen_libpython="$frozen_root/$(basename -- "$build_libpython")"
+[[ -s "$collect_toc" ]] || die "PyInstaller COLLECT source ledger is missing"
 [[ -f "$frozen_libpython" ]] || die "PyInstaller did not collect the selected libpython"
 cmp --silent "$build_libpython" "$frozen_libpython" \
   || die "PyInstaller collected a host libpython instead of $build_libpython"
+for webview_js in api.js customize.js finish.js state.js \
+  lib/dom_json.js lib/polyfill.js; do
+  [[ -f "$frozen_root/webview/js/$webview_js" ]] \
+    || die "PyWebView's PyInstaller hook omitted webview/js/$webview_js"
+done
+[[ ! -e "$frozen_root/webview/lib" ]] \
+  || die "unused cross-platform PyWebView binaries were frozen into the Linux launcher"
 
 # QtWebEngine loads Wayland support during import even when the active display
 # is X11/Xvfb. PyInstaller does not discover these dlopen-time dependencies, so
@@ -97,7 +110,7 @@ wayland_libraries=(
   libwayland-client.so.0 libwayland-cursor.so.0
   libwayland-egl.so.1 libwayland-server.so.0
 )
-declare -A native_library_sources=()
+declare -A manual_library_sources=()
 for library in "${wayland_libraries[@]}"; do
   source_library="$(
     ldconfig -p | awk -v name="$library" \
@@ -106,7 +119,7 @@ for library in "${wayland_libraries[@]}"; do
   [[ -n "$source_library" && -f "$source_library" ]] \
     || die "required Wayland runtime library is unavailable: $library"
   cp -L -- "$source_library" "$frozen_root/$library"
-  native_library_sources["$library"]="$source_library"
+  manual_library_sources["$library"]="$source_library"
 done
 required_qt_libraries=(
   libpulse.so.0 libxcb-cursor.so.0 libxcb-icccm.so.4 libxcb-image.so.0
@@ -117,50 +130,30 @@ required_qt_libraries=(
 for library in "${required_qt_libraries[@]}"; do
   [[ -f "$frozen_root/$library" ]] \
     || die "PyInstaller did not collect required Qt runtime library: $library"
-  if [[ -z "${native_library_sources[$library]:-}" ]]; then
-    source_library="$(
-      ldconfig -p | awk -v name="$library" \
-        '$1 == name && /x86-64/ && $NF ~ /^\// && !found { print $NF; found = 1 }'
-    )"
-    [[ -n "$source_library" && -f "$source_library" ]] \
-      || die "cannot identify build-host source for native library: $library"
-    native_library_sources["$library"]="$source_library"
-  fi
 done
 
-# These libraries are copied from the Ubuntu build host, not from wheels. Bind
-# each binary to its exact Debian package/version and ship that package's
-# copyright file. This list is deliberately the same list asserted above.
-native_inventory="$appdir/usr/share/licenses/native-packages/packages.tsv"
-printf 'library\tsource\tdebian_package\tversion\tcopyright\n' >"$native_inventory"
-declare -A copied_native_notices=()
-for library in "${required_qt_libraries[@]}"; do
-  source_library="${native_library_sources[$library]}"
-  real_library="$(realpath -- "$source_library")"
-  owner_lines="$(dpkg-query --search "$real_library" 2>/dev/null || true)"
-  if [[ -z "$owner_lines" ]]; then
-    owner_lines="$(dpkg-query --search "$source_library" 2>/dev/null || true)"
-  fi
-  owner_line="${owner_lines%%$'\n'*}"
-  [[ -n "$owner_line" ]] \
-    || die "cannot identify Debian package for bundled native library: $real_library"
-  owner_with_arch="${owner_line%%: *}"
-  package="${owner_with_arch%%:*}"
-  package_version="$(dpkg-query --show --showformat='${Version}' "$owner_with_arch")"
-  copyright="/usr/share/doc/$package/copyright"
-  [[ -s "$copyright" ]] \
-    || die "Debian copyright notice is missing for bundled package: $package"
-  target="native-packages/$package/copyright"
-  if [[ -z "${copied_native_notices[$package]:-}" ]]; then
-    mkdir -p -- "$appdir/usr/share/licenses/native-packages/$package"
-    cp -L -- "$copyright" "$appdir/usr/share/licenses/$target"
-    copied_native_notices["$package"]=1
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$library" "$real_library" "$owner_with_arch" "$package_version" "$target" \
-    >>"$native_inventory"
+# Audit every source in PyInstaller's final COLLECT operation. Known build
+# trees are tied to their aggregate notices; every other absolute input must
+# be owned by dpkg, and brings its exact package/version/copyright into the
+# bundle. The Wayland libraries are recorded separately because they are
+# copied for Qt's dlopen path after PyInstaller has written its TOC.
+inventory_command=(
+  "$venv/bin/python" "$SCRIPT_DIR/inventory_appimage_sources.py"
+  --toc "$collect_toc"
+  --destination "$appdir/usr/share/licenses/native-packages"
+  --launcher-venv "$venv"
+  --portable-python "$build_prefix"
+  --pyinstaller-work "$work_dir/pyinstaller-work"
+  --build-root "$work_dir"
+  --repository "$REPO_ROOT"
+)
+for library in "${wayland_libraries[@]}"; do
+  inventory_command+=(
+    --manual-source "_internal/$library=${manual_library_sources[$library]}"
+  )
 done
-log "verified frozen launcher libpython and Qt runtime libraries"
+"${inventory_command[@]}"
+log "verified and inventoried every frozen launcher source"
 cp -a -- "$work_dir/pyinstaller-dist/portable-comfy/." "$appdir/usr/lib/portable-comfy/"
 
 cp -- "$REPO_ROOT/packaging/appimage-launcher.sh" "$appdir/usr/bin/portable-comfy"
@@ -196,6 +189,24 @@ download_verified "$PROXY_TOOLS_LICENSE_URL" "$proxy_tools_license" \
   --require-license-file PyQt6-sip \
   --require-license-file QtPy \
   --extra-license-file "proxy-tools=$proxy_tools_license"
+"$venv/bin/python" - \
+  "$appdir/usr/share/licenses/python-packages/packages.json" <<'PY'
+import json
+import pathlib
+import sys
+
+inventory = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+summary = inventory["summary"]
+package_count = len(inventory["packages"])
+expected = {
+    "distributions": package_count,
+    "with_license_files": package_count,
+    "metadata_only": 0,
+    "unidentified": 0,
+}
+if summary != expected:
+    raise SystemExit(f"launcher dependency notices are incomplete: {summary!r}")
+PY
 
 download_verified "$APPIMAGETOOL_URL" "$tool" "$APPIMAGETOOL_SHA256"
 download_verified "$APPIMAGE_RUNTIME_URL" "$runtime_file" "$APPIMAGE_RUNTIME_SHA256"

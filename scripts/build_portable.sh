@@ -83,9 +83,10 @@ are under ComfyUI/runtime/LICENSES/python-packages/.
 
 Notices for the frozen launcher packages (including PyWebView, PyInstaller,
 PyQt6, Qt and Qt WebEngine) are under launcher-python-packages/. Notices and
-an inventory for native libraries copied from the Ubuntu build host are under
-launcher-native-packages/. The embedded AppImage type-2 runtime notice is
-AppImage-runtime-MIT.txt.
+a complete provenance.tsv ledger for every PyInstaller source are under
+launcher-native-packages/. Its packages.tsv binds every Debian-owned host
+input to the copied package copyright and exact version. The embedded AppImage
+type-2 runtime notice is AppImage-runtime-MIT.txt.
 EOF
 "$SCRIPT_DIR/install_builtin_models.sh" "$portable_root"
 

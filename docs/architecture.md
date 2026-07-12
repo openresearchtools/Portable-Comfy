@@ -140,9 +140,14 @@ that internal field does not make the public Core artifact source-only.
 The first-install archive's top-level `LICENSES/` directory indexes the
 notices inside the environment and frozen launcher. Launcher package notices
 cover PyWebView, PyInstaller, PyQt/Qt WebEngine and Chromium. Native Wayland,
-PulseAudio, XCB and XKB libraries copied from the Ubuntu build host are bound
-to their Debian package/version and copyright file in a TSV inventory. The
-embedded AppImage type-2 runtime carries its pinned MIT notice.
+PulseAudio, XCB and XKB libraries copied from the Ubuntu build host are not a
+hand-maintained license subset: the build parses PyInstaller's final
+`COLLECT-00.toc` and records every frozen source in `provenance.tsv`. Every
+absolute source must be inside an identified build tree or owned by an
+installed Debian package. `packages.tsv` binds each host package to its exact
+version and copied Debian copyright file; the four dlopen-only Wayland inputs
+are explicit manual provenance rows. An unknown absolute source fails the
+build. The embedded AppImage type-2 runtime carries its pinned MIT notice.
 
 ## Python and CUDA portability
 

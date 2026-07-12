@@ -204,4 +204,7 @@ the replaceable `ComfyUI/` environment; CPython's PSF license sits beside the
 interpreter; installed Python/Torch/CUDA wheel notices sit under
 `ComfyUI/runtime/LICENSES/`; and AppImage launcher notices cover PyWebView,
 PyInstaller, PyQt/Qt WebEngine, Chromium, the embedded AppImage runtime and
-native Ubuntu libraries copied into the launcher.
+native Ubuntu libraries copied into the launcher. The native notice directory
+includes a complete PyInstaller-source provenance ledger and an exact Debian
+package/version/copyright ledger; an unclassified absolute build input is a
+hard build failure.

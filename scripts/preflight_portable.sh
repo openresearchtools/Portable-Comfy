@@ -146,25 +146,37 @@ if ((structural == 0)); then
     || die "runtime relocation repair tool is missing"
   runtime_notices="$root/ComfyUI/runtime/LICENSES/python-packages/packages.json"
   launcher_notices="$root/LICENSES/launcher-python-packages/packages.json"
-  native_notices="$root/LICENSES/launcher-native-packages/packages.tsv"
+  native_provenance="$root/LICENSES/launcher-native-packages/provenance.tsv"
+  native_packages="$root/LICENSES/launcher-native-packages/packages.tsv"
   [[ -s "$prefix/LICENSE.txt" \
      && -s "$root/LICENSES/CPython-PSF-2.0.txt" \
      && -s "$root/LICENSES/AppImage-runtime-MIT.txt" \
      && -s "$root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt" \
      && -s "$runtime_notices" \
      && -s "$launcher_notices" \
-     && -s "$native_notices" ]] \
+     && -s "$native_provenance" \
+     && -s "$native_packages" ]] \
     || die "runtime/AppImage redistribution notices are incomplete"
-  python3 - "$runtime_notices" "$launcher_notices" "$native_notices" <<'PY'
+  python3 - "$runtime_notices" "$launcher_notices" \
+    "$native_provenance" "$native_packages" <<'PY'
+import collections
 import csv
 import json
+import pathlib
 import sys
 
-runtime_path, launcher_path, native_path = sys.argv[1:]
+runtime_path, launcher_path, provenance_path, packages_path = sys.argv[1:]
 
 def licensed(path):
     data = json.load(open(path, encoding="utf-8"))
     assert data["schema_version"] == 2
+    package_count = len(data["packages"])
+    assert data["summary"] == {
+        "distributions": package_count,
+        "with_license_files": package_count,
+        "metadata_only": 0,
+        "unidentified": 0,
+    }
     return {
         package["name"].lower().replace("_", "-")
         for package in data["packages"]
@@ -182,8 +194,56 @@ assert {
     "pyqt6", "pyqt6-qt6",
     "pyqt6-webengine", "pyqt6-webengine-qt6", "pyqt6-sip", "qtpy",
 } <= launcher
-with open(native_path, encoding="utf-8", newline="") as stream:
-    libraries = {row["library"] for row in csv.DictReader(stream, delimiter="\t")}
+
+with open(provenance_path, encoding="utf-8", newline="") as stream:
+    provenance = list(csv.DictReader(stream, delimiter="\t"))
+assert provenance
+expected_provenance_fields = {
+    "origin", "destination", "typecode", "source", "resolved_source",
+    "classification", "debian_package", "version", "license_reference",
+}
+assert set(provenance[0]) == expected_provenance_fields
+allowed_classifications = {
+    "relative-reference", "launcher-venv", "portable-python",
+    "pyinstaller-build", "build-generated", "project-source",
+    "debian-host-package",
+}
+assert all(row["classification"] in allowed_classifications for row in provenance)
+assert all(
+    row["classification"] != "relative-reference"
+    for row in provenance
+    if pathlib.Path(row["source"]).is_absolute()
+)
+
+with open(packages_path, encoding="utf-8", newline="") as stream:
+    package_rows = list(csv.DictReader(stream, delimiter="\t"))
+assert package_rows
+assert set(package_rows[0]) == {
+    "debian_package", "version", "copyright", "frozen_source_count",
+}
+packages = {row["debian_package"]: row for row in package_rows}
+assert len(packages) == len(package_rows)
+native_root = pathlib.Path(packages_path).resolve().parent
+for row in package_rows:
+    copyright_path = (native_root / row["copyright"]).resolve()
+    assert copyright_path.is_relative_to(native_root)
+    assert copyright_path.is_file() and copyright_path.stat().st_size
+
+counts = collections.Counter(
+    row["debian_package"]
+    for row in provenance
+    if row["classification"] == "debian-host-package"
+)
+assert set(counts) == set(packages)
+for package, count in counts.items():
+    package_row = packages[package]
+    assert int(package_row["frozen_source_count"]) == count
+    for source_row in provenance:
+        if source_row["debian_package"] == package:
+            assert source_row["version"] == package_row["version"]
+            assert source_row["license_reference"] == package_row["copyright"]
+
+libraries = {pathlib.PurePosixPath(row["destination"]).name for row in provenance}
 assert {
     "libpulse.so.0", "libxcb-cursor.so.0", "libxcb-icccm.so.4",
     "libxcb-image.so.0", "libxcb-keysyms.so.1", "libxcb-render-util.so.0",
@@ -192,6 +252,23 @@ assert {
     "libwayland-cursor.so.0", "libwayland-egl.so.1",
     "libwayland-server.so.0",
 } <= libraries
+manual_wayland = {
+    pathlib.PurePosixPath(row["destination"]).name
+    for row in provenance
+    if row["origin"] == "manual"
+}
+assert {
+    "libwayland-client.so.0", "libwayland-cursor.so.0",
+    "libwayland-egl.so.1", "libwayland-server.so.0",
+} == manual_wayland
+destinations = {row["destination"] for row in provenance}
+assert {
+    "_internal/webview/js/api.js", "_internal/webview/js/customize.js",
+    "_internal/webview/js/finish.js", "_internal/webview/js/state.js",
+    "_internal/webview/js/lib/dom_json.js",
+    "_internal/webview/js/lib/polyfill.js",
+} <= destinations
+assert not any(destination.startswith("_internal/webview/lib/") for destination in destinations)
 PY
   "$prefix/bin/repair-portable-entrypoints"
   [[ "$(cat "$prefix/.portable-comfy-prefix")" == "$(realpath "$prefix")" ]] \
