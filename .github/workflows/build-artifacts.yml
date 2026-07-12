@@ -30,6 +30,7 @@ jobs:
         run: |
           source packaging/versions.env
           printf 'comfy_version=%s\n' "$COMFY_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'python_version=%s\n' "$PYTHON_VERSION" >> "$GITHUB_OUTPUT"
           printf 'full_archive=Portable-Comfy-linux-x86_64.tar.gz\n' >> "$GITHUB_OUTPUT"
           printf 'core_archive=Portable-Comfy-core-v%s.tar.gz\n' \
             "$COMFY_VERSION" >> "$GITHUB_OUTPUT"
@@ -52,10 +53,10 @@ jobs:
           printf '%s\n' "$before"
           df -h /
 
-      - name: Set up Python 3.13.12 build interpreter
+      - name: Set up pinned build interpreter
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: 3.13.12
+          python-version: ${{ steps.versions.outputs.python_version }}
 
       - name: Install native build dependencies
         run: |
