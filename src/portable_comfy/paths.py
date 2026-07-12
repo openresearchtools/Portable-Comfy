@@ -253,8 +253,10 @@ class PortablePaths:
         if not prefix.is_dir():
             return 0
         stamp = prefix / ".portable-comfy-prefix"
+        stamp_text: str | None = None
         try:
-            previous = Path(stamp.read_text(encoding="utf-8").strip()).resolve()
+            stamp_text = stamp.read_text(encoding="utf-8").strip()
+            previous = Path(stamp_text).resolve()
         except (FileNotFoundError, OSError, ValueError):
             previous = prefix
         changed = 0
@@ -308,6 +310,8 @@ class PortablePaths:
         temporary = stamp.with_suffix(".tmp")
         temporary.write_text(str(prefix) + "\n", encoding="utf-8")
         temporary.replace(stamp)
+        if stamp_text != str(prefix):
+            changed += 1
         if prefix == self.python_prefix.resolve():
             changed += self._repair_node_overlay_metadata()
         return changed
@@ -538,6 +542,7 @@ class PortablePaths:
             {
                 "PYTHONHOME": str(selected_prefix),
                 "PYTHONNOUSERSITE": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
                 "PATH": f"{selected_prefix / 'bin'}{os.pathsep}{env.get('PATH', '')}",
                 "LD_LIBRARY_PATH": library_path,
                 "PORTABLE_COMFY_ROOT": str(self.root),

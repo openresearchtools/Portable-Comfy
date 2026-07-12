@@ -169,6 +169,28 @@ def test_complete_environment_update_preserves_every_persistent_area(
     assert (backups[0] / "runtime/python/bin/python-portable").is_file()
     assert supervisor.running and supervisor.starts == 1
     assert not (portable_root.state / TRANSACTION_MARKER).exists()
+    installed_manifest = json.loads(
+        portable_root.environment_manifest.read_text(encoding="utf-8")
+    )
+    installed_files = {
+        item["path"]: item
+        for item in installed_manifest["files"]
+        if item["type"] == "file"
+    }
+    stamp_path = "ComfyUI/runtime/python/.portable-comfy-prefix"
+    assert stamp_path in installed_files
+    assert installed_files[stamp_path]["sha256"] == _sha256(
+        portable_root.python_prefix / ".portable-comfy-prefix"
+    )
+    checksum_entries = {
+        line.split("  ", 1)[1]: line.split("  ", 1)[0]
+        for line in portable_root.environment_checksums.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    }
+    assert checksum_entries == {
+        path: item["sha256"] for path, item in installed_files.items()
+    }
 
 
 def test_candidate_preflight_uses_candidate_python_without_node_overlay(
@@ -194,6 +216,7 @@ def test_candidate_preflight_uses_candidate_python_without_node_overlay(
         assert command[0].endswith("ComfyUI/runtime/python/bin/python-portable")
         assert "PIP_TARGET" not in environment
         assert "PYTHONPATH" not in environment
+        assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_environment_with_new_python_torch_cuda_is_accepted(

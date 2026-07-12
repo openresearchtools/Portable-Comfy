@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -114,6 +115,7 @@ def test_environment_discards_pyinstaller_and_virtualenv_paths(
     assert env["CM_USE_PYGIT2"] == "1"
     assert env["PIP_TARGET"] == str(portable_root.custom_node_site_packages)
     assert str(portable_root.custom_node_bin) in env["PATH"]
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_candidate_environment_can_exclude_persistent_node_overlay(
@@ -130,6 +132,25 @@ def test_candidate_environment_can_exclude_persistent_node_overlay(
     assert "PIP_TARGET" not in env
     assert env["PYTHONHOME"] == str(prefix)
     assert env["COMFYUI_PATH"] == str(candidate)
+
+
+def test_server_environment_prevents_environment_bytecode_writes(
+    portable_root: PortablePaths,
+) -> None:
+    module = portable_root.comfyui / "bytecode_probe.py"
+    module.write_text("VALUE = 42\n", encoding="utf-8")
+    completed = subprocess.run(
+        [
+            str(portable_root.python),
+            "-c",
+            "import bytecode_probe; assert bytecode_probe.VALUE == 42",
+        ],
+        cwd=portable_root.comfyui,
+        env=portable_root.server_environment(),
+        check=False,
+    )
+    assert completed.returncode == 0
+    assert not (portable_root.comfyui / "__pycache__").exists()
 
 
 def test_runtime_metadata_repair_handles_move_and_new_pip_scripts(
@@ -153,7 +174,7 @@ def test_runtime_metadata_repair_handles_move_and_new_pip_scripts(
         "/old/root/ComfyUI/runtime/python\n", encoding="utf-8"
     )
     changed = paths.repair_runtime_metadata()
-    assert changed == 2
+    assert changed == 3
     assert script.read_text(encoding="utf-8").startswith("#!/bin/sh\n'''exec'")
     assert str(paths.python_prefix) in makefile.read_text(encoding="utf-8")
     assert (paths.python_prefix / ".portable-comfy-prefix").read_text().strip() == str(
@@ -177,7 +198,7 @@ def test_runtime_repair_relocates_persistent_node_entrypoints(tmp_path: Path) ->
         "/old/place\n", encoding="utf-8"
     )
 
-    assert paths.repair_runtime_metadata() == 2
+    assert paths.repair_runtime_metadata() == 3
     wrapper = script.read_text(encoding="utf-8")
     assert wrapper.startswith("#!/bin/sh\n'''exec'")
     assert "ComfyUI/runtime/python/bin/python3" in wrapper

@@ -18,6 +18,7 @@ from portable_comfy.app import (
 )
 from portable_comfy.locking import AlreadyRunningError, InstanceLock
 from portable_comfy.paths import PortablePaths
+from portable_comfy.updater import EnvironmentUpdater
 
 
 def test_self_test_needs_no_bundled_runtime(tmp_path: Path) -> None:
@@ -109,6 +110,7 @@ def test_main_locks_before_runtime_repair(
     portable_root: PortablePaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed = False
+    resealed = False
 
     def repair(paths: PortablePaths) -> int:
         nonlocal observed
@@ -116,9 +118,19 @@ def test_main_locks_before_runtime_repair(
         with pytest.raises(AlreadyRunningError):
             competitor.acquire()
         observed = True
-        return 0
+        return 1
+
+    def reseal(_class: type[EnvironmentUpdater], paths: PortablePaths) -> None:
+        nonlocal resealed
+        competitor = InstanceLock(paths.state / "launcher.lock")
+        with pytest.raises(AlreadyRunningError):
+            competitor.acquire()
+        resealed = True
 
     monkeypatch.setattr(PortablePaths, "repair_runtime_metadata", repair)
+    monkeypatch.setattr(
+        EnvironmentUpdater, "reseal_active_environment", classmethod(reseal)
+    )
     monkeypatch.setattr("portable_comfy.app._run_headless", lambda *_args, **_kwargs: 0)
     assert (
         main(
@@ -131,7 +143,7 @@ def test_main_locks_before_runtime_repair(
         )
         == 0
     )
-    assert observed
+    assert observed and resealed
 
 
 def test_smoke_rejects_disabled_autostart() -> None:

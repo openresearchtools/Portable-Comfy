@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -567,6 +568,80 @@ class EnvironmentUpdater:
                 ).strip()
                 raise UpdateError(f"candidate environment preflight failed: {detail}")
 
+    @classmethod
+    def _seal_environment(
+        cls, environment: Path, delivery_manifest: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        """Describe the installed bytes after relocation repair.
+
+        Delivery checksums authenticate the archive before it executes. The
+        installed manifest is deliberately resealed because the relocatable
+        runtime updates text metadata and its prefix stamp at the final path.
+        """
+
+        payload_root = environment.parent
+        entries: list[dict[str, object]] = []
+        for path in sorted(environment.rglob("*")):
+            relative = path.relative_to(payload_root)
+            path_text = relative.as_posix()
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                continue
+            if stat.S_ISLNK(mode):
+                target = os.readlink(path)
+                _safe_link_target(PurePosixPath(path_text), target)
+                try:
+                    path.resolve(strict=True).relative_to(environment.resolve())
+                except (FileNotFoundError, RuntimeError, ValueError) as error:
+                    raise UpdateError(
+                        f"cannot seal dangling, cyclic, or escaping link: {path_text}"
+                    ) from error
+                entries.append(
+                    {"path": path_text, "type": "symlink", "target": target}
+                )
+            elif stat.S_ISREG(mode):
+                entries.append(
+                    {
+                        "path": path_text,
+                        "type": "file",
+                        "sha256": _digest(path),
+                        "size": path.stat().st_size,
+                    }
+                )
+            else:
+                raise UpdateError(f"cannot seal special environment file: {path_text}")
+        manifest = copy.deepcopy(delivery_manifest)
+        manifest["files"] = entries
+        checksums = "".join(
+            f"{item['sha256']}  {item['path']}\n"
+            for item in entries
+            if item["type"] == "file"
+        )
+        return manifest, checksums
+
+    @classmethod
+    def reseal_active_environment(cls, paths: PortablePaths) -> None:
+        """Refresh installed integrity metadata after an explicit relocation."""
+
+        try:
+            delivery_manifest = json.loads(
+                paths.environment_manifest.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise UpdateError(
+                f"cannot read active environment manifest: {error}"
+            ) from error
+        if not isinstance(delivery_manifest, dict):
+            raise UpdateError("active environment manifest is not an object")
+        manifest, checksums = cls._seal_environment(
+            paths.comfyui, delivery_manifest
+        )
+        cls._atomic_write(paths.environment_checksums, checksums)
+        cls._atomic_write(
+            paths.environment_manifest,
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        )
+
     def _activate(self, bundle: ValidatedBundle) -> UpdateResult:
         was_running = self.supervisor.is_running
         rollback_root = self.paths.state / "rollback"
@@ -621,14 +696,22 @@ class EnvironmentUpdater:
             activated = True
             journal["phase"] = "candidate_active"
             self._write_journal(journal)
-            self._atomic_write(
-                self.paths.environment_manifest,
-                json.dumps(bundle.manifest, indent=2, sort_keys=True) + "\n",
-            )
-            self._atomic_write(self.paths.environment_checksums, bundle.checksums)
             # The candidate moved once more after staged preflight. Repair only
             # relocatable text metadata; persistent node packages remain outside.
             self.paths.repair_runtime_metadata()
+            installed_manifest, installed_checksums = self._seal_environment(
+                self.paths.comfyui, bundle.manifest
+            )
+            # Checksums go first; the manifest is the commit record for the
+            # resealed active generation. The transaction journal remains live
+            # until the candidate passes its HTTP health check.
+            self._atomic_write(
+                self.paths.environment_checksums, installed_checksums
+            )
+            self._atomic_write(
+                self.paths.environment_manifest,
+                json.dumps(installed_manifest, indent=2, sort_keys=True) + "\n",
+            )
             self.supervisor.start()
             if not was_running:
                 self.supervisor.stop()

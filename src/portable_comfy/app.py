@@ -520,6 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repaired = paths.repair_runtime_metadata()
             if repaired:
                 LOGGER.info("repaired %d portable Python metadata files", repaired)
+                EnvironmentUpdater.reseal_active_environment(paths)
             supervisor = ServerSupervisor(
                 paths,
                 port=args.port,
