@@ -521,6 +521,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if repaired:
                 LOGGER.info("repaired %d portable Python metadata files", repaired)
                 EnvironmentUpdater.reseal_active_environment(paths)
+            node_runtime_changes = paths.ensure_node_runtime()
+            if node_runtime_changes:
+                LOGGER.info(
+                    "initialized or rebound persistent custom-node venv (%d changes)",
+                    node_runtime_changes,
+                )
             supervisor = ServerSupervisor(
                 paths,
                 port=args.port,

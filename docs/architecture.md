@@ -50,24 +50,27 @@ Torch or dependency set.
 The top-level `custom_nodes/`, `custom_node_runtime/`, `models/`, `input/`,
 `output/`, `temp/`, `workflows/` and `user/` directories are persistent. Node
 repositories stay in `custom_nodes/`; node-only Python packages that must
-survive an environment replacement stay in
-`custom_node_runtime/site-packages/`, with their console scripts under
-`custom_node_runtime/bin/`. They execute in the environment's Python
-process, so an environment update may still expose a real dependency or ABI
-incompatibility even though it never deletes this overlay.
+survive an environment replacement stay in the shared system-site-packages
+venv at `custom_node_runtime/`. ComfyUI itself runs with that venv's Python.
+It inherits the active environment's locked packages and Torch, while normal
+pip metadata, packages and console scripts installed by nodes remain in the
+persistent venv. An update may still expose a real dependency or ABI
+incompatibility even though it never deletes this venv.
 
-Before staging a non-empty overlay, the updater compares the candidate and
+Before staging when the venv contains node packages, the updater compares the candidate and
 active Python, Torch, torchvision, torchaudio, CUDA and platform values. A
 compatible Core/frontend/requirements update proceeds. An ABI-changing update
-is refused until the user moves aside or rebuilds the overlay; the updater does
+is refused until the user moves aside or rebuilds the venv; the updater does
 not guess that arbitrary compiled extensions are compatible.
 
-The launcher sets `PORTABLE_COMFY_NODE_SITE_PACKAGES`, `PYTHONPATH` and
-`PIP_TARGET` for the active server. A small `.pth` hook shipped in each base
-environment calls `site.addsitedir` on that location, which also processes
-`.pth` files installed inside the overlay. Candidate preflight intentionally
-omits these variables so a new generation is tested against only its locked
-base requirements.
+The launcher creates the venv offline with
+`--system-site-packages --without-pip`, starts ComfyUI with its interpreter,
+and leaves `PYTHONHOME`, `PYTHONPATH` and `PIP_TARGET` unset. Base pip therefore
+performs ordinary venv installs, upgrades and uninstalls without mutating the
+replaceable base. After relocation or a same-ABI update, the launcher rewrites
+`pyvenv.cfg`, relative interpreter links, editable paths and console-script
+entry points to the active base. Candidate preflight intentionally invokes the
+candidate base Python directly, with no persistent venv on its import path.
 
 The portable root's `workflows/` directory contains the real files.
 `user/default/workflows` is a relative `../../workflows` symlink pointing back
@@ -141,7 +144,7 @@ can access the user's files, network and GPU with the same permissions as the
 application. Portability does not sandbox it.
 
 All conventional nodes share one interpreter, Torch installation and import
-space, with the persistent node-package overlay added to that process.
+space through the persistent custom-node venv.
 Dependency conflicts therefore remain possible. A future profiles feature may
 materialize separate full environments, but pretending that arbitrary existing
 nodes have isolated processes would be incompatible with how they exchange

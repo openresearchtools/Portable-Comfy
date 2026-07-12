@@ -213,22 +213,16 @@ class EnvironmentUpdater:
             stage.mkdir()
             try:
                 bundle = self._extract_and_validate(source, stage)
-                self._check_node_overlay_abi(bundle.manifest["runtime"])
+                self._check_node_runtime_abi(bundle.manifest["runtime"])
                 self._preflight(bundle)
                 return self._activate(bundle)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
 
-    def _check_node_overlay_abi(self, candidate: dict[str, Any]) -> None:
+    def _check_node_runtime_abi(self, candidate: dict[str, Any]) -> None:
         """Do not silently carry compiled node packages across runtime ABIs."""
 
-        overlay_entries = (
-            path
-            for path in self.paths.custom_node_runtime.rglob("*")
-            if path.name != ".portable-comfy-root"
-            and (path.is_file() or path.is_symlink())
-        )
-        if next(overlay_entries, None) is None:
+        if not self.paths.node_runtime_has_packages():
             return
         try:
             active = json.loads(
@@ -253,8 +247,9 @@ class EnvironmentUpdater:
         if changed:
             raise CompatibilityError(
                 "the candidate changes the custom-node extension ABI "
-                f"({', '.join(changed)}), but custom_node_runtime contains packages; "
-                "move or rebuild that overlay before installing this environment"
+                f"({', '.join(changed)}), but the persistent custom-node venv "
+                "contains packages; install a compatible environment or explicitly "
+                "rebuild that venv"
             )
 
     def _extract_and_validate(self, archive: Path, stage: Path) -> ValidatedBundle:
@@ -518,7 +513,7 @@ class EnvironmentUpdater:
         environment = self.paths.server_environment(
             python_prefix=candidate_prefix,
             comfyui_path=candidate,
-            include_node_overlay=False,
+            include_node_runtime=False,
             cache_root=scratch / "cache",
         )
         runtime = bundle.manifest["runtime"]
@@ -545,6 +540,7 @@ class EnvironmentUpdater:
                 base_directory=scratch / "data",
                 user_directory=scratch / "user",
                 temp_directory=scratch / "temp",
+                use_node_runtime=False,
             ),
         )
         for command in commands:
@@ -596,9 +592,7 @@ class EnvironmentUpdater:
                     raise UpdateError(
                         f"cannot seal dangling, cyclic, or escaping link: {path_text}"
                     ) from error
-                entries.append(
-                    {"path": path_text, "type": "symlink", "target": target}
-                )
+                entries.append({"path": path_text, "type": "symlink", "target": target})
             elif stat.S_ISREG(mode):
                 entries.append(
                     {
@@ -633,9 +627,7 @@ class EnvironmentUpdater:
             ) from error
         if not isinstance(delivery_manifest, dict):
             raise UpdateError("active environment manifest is not an object")
-        manifest, checksums = cls._seal_environment(
-            paths.comfyui, delivery_manifest
-        )
+        manifest, checksums = cls._seal_environment(paths.comfyui, delivery_manifest)
         cls._atomic_write(paths.environment_checksums, checksums)
         cls._atomic_write(
             paths.environment_manifest,
@@ -705,9 +697,7 @@ class EnvironmentUpdater:
             # Checksums go first; the manifest is the commit record for the
             # resealed active generation. The transaction journal remains live
             # until the candidate passes its HTTP health check.
-            self._atomic_write(
-                self.paths.environment_checksums, installed_checksums
-            )
+            self._atomic_write(self.paths.environment_checksums, installed_checksums)
             self._atomic_write(
                 self.paths.environment_manifest,
                 json.dumps(installed_manifest, indent=2, sort_keys=True) + "\n",

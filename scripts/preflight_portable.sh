@@ -6,7 +6,7 @@ IFS=$'\n\t'
 # A preflight must be observational: imports such as torch -> pickletools must
 # never add bytecode to a payload after its complete-file manifest is sealed.
 export PYTHONDONTWRITEBYTECODE=1
-unset PORTABLE_COMFY_NODE_SITE_PACKAGES PIP_TARGET PYTHONPATH VIRTUAL_ENV
+unset PIP_TARGET PYTHONPATH PYTHONHOME VIRTUAL_ENV
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
@@ -24,13 +24,11 @@ done
 target="$(absolute_path "$target")"
 temporary=""
 extension_temp=""
-overlay_test_dir=""
-overlay_test_pth=""
+node_venv_test=""
 cleanup() {
   [[ -z "$temporary" ]] || rm -rf -- "$temporary"
   [[ -z "$extension_temp" ]] || rm -rf -- "$extension_temp"
-  [[ -z "$overlay_test_pth" ]] || rm -f -- "$overlay_test_pth"
-  [[ -z "$overlay_test_dir" ]] || rm -rf -- "$overlay_test_dir"
+  [[ -z "$node_venv_test" ]] || rm -rf -- "$node_venv_test"
 }
 trap cleanup EXIT
 if [[ -f "$target" ]]; then
@@ -48,7 +46,7 @@ fi
 
 required_dirs=(
   ComfyUI ComfyUI/frontend ComfyUI/runtime custom_nodes
-  custom_node_runtime custom_node_runtime/bin custom_node_runtime/site-packages
+  custom_node_runtime
   models input output temp workflows user logs config manifest
 )
 for path in "${required_dirs[@]}"; do
@@ -162,20 +160,64 @@ assert importlib.util.find_spec("comfyui_manager")
 assert importlib.util.find_spec("pygit2")
 print(json.dumps({"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda}))
 PY
-  overlay="$root/custom_node_runtime/site-packages"
-  overlay_test_dir="$(mktemp -d "$overlay/.portable-overlay-test.XXXXXX")"
-  mkdir -p -- "$overlay_test_dir/modules"
-  printf 'SENTINEL = 42\n' >"$overlay_test_dir/modules/portable_overlay_test.py"
-  # CPython deliberately ignores hidden .pth files, so this probe must have a
-  # visible basename just like packages installed into the real node overlay.
-  overlay_test_pth="$(mktemp --suffix=.pth "$overlay/portable-comfy-preflight.XXXXXX")"
-  printf '%s/modules\n' "$(basename -- "$overlay_test_dir")" >"$overlay_test_pth"
-  env -u PYTHONPATH PORTABLE_COMFY_NODE_SITE_PACKAGES="$overlay" \
-    "$python" -c 'import portable_overlay_test as value; assert value.SENTINEL == 42'
-  rm -f -- "$overlay_test_pth"
-  rm -rf -- "$overlay_test_dir"
-  overlay_test_pth=""
-  overlay_test_dir=""
+  node_venv_test="$(mktemp -d "${TMPDIR:-/tmp}/Portable Comfy node venv.XXXXXX")"
+  rm -rf -- "$node_venv_test"
+  "$python" -m venv --system-site-packages --without-pip "$node_venv_test"
+  node_python="$node_venv_test/bin/python"
+  "$node_python" - "$node_venv_test" "$prefix" <<'PY'
+import pathlib, sys
+import pip, torch
+
+venv = pathlib.Path(sys.argv[1]).resolve()
+base = pathlib.Path(sys.argv[2]).resolve()
+assert pathlib.Path(sys.prefix).resolve() == venv
+assert pathlib.Path(sys.base_prefix).resolve() == base
+assert pathlib.Path(torch.__file__).resolve().is_relative_to(base)
+assert pathlib.Path(pip.__file__).resolve().is_relative_to(base)
+PY
+  "$python" - "$node_venv_test" <<'PY'
+from pathlib import Path
+from zipfile import ZipFile
+import sys
+
+root = Path(sys.argv[1])
+for version in ("1.0", "2.0"):
+    dist = f"portable_venv_probe-{version}.dist-info"
+    wheel = root / f"portable_venv_probe-{version}-py3-none-any.whl"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr("portable_venv_probe.py", f"VERSION = {version!r}\n")
+        archive.writestr(
+            f"{dist}/METADATA",
+            "Metadata-Version: 2.1\nName: portable-venv-probe\n"
+            f"Version: {version}\n",
+        )
+        archive.writestr(
+            f"{dist}/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(
+            f"{dist}/RECORD",
+            "portable_venv_probe.py,,\n"
+            f"{dist}/METADATA,,\n{dist}/WHEEL,,\n{dist}/RECORD,,\n",
+        )
+PY
+  "$node_python" -m pip install --disable-pip-version-check --no-deps \
+    "$node_venv_test/portable_venv_probe-1.0-py3-none-any.whl"
+  "$node_python" -m pip install --disable-pip-version-check --no-deps \
+    "$node_venv_test/portable_venv_probe-2.0-py3-none-any.whl"
+  "$node_python" - "$node_venv_test" <<'PY'
+from pathlib import Path
+import portable_venv_probe
+import sys
+
+site = next((Path(sys.argv[1]) / "lib").glob("python*/site-packages"))
+assert portable_venv_probe.VERSION == "2.0"
+assert [path.name for path in site.glob("portable_venv_probe-*.dist-info")] == [
+    "portable_venv_probe-2.0.dist-info"
+]
+PY
+  rm -rf -- "$node_venv_test"
+  node_venv_test=""
   require_command cc
   extension_temp="$(mktemp -d "${TMPDIR:-/tmp}/Portable Comfy extension.XXXXXX")"
   extension_dir="$extension_temp/native-extension"

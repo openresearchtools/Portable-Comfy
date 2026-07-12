@@ -21,9 +21,10 @@ Portable-Comfy/
 │   └── runtime/
 │       └── python/                # CPython, locked Core deps and Torch/CUDA
 ├── custom_nodes/                  # retained across environment updates
-├── custom_node_runtime/           # persistent node-package overlay
+├── custom_node_runtime/           # persistent shared custom-node venv
 │   ├── bin/
-│   └── site-packages/
+│   ├── lib/python3.13/site-packages/
+│   └── pyvenv.cfg
 ├── models/
 ├── input/
 ├── output/
@@ -89,7 +90,7 @@ The following are never part of an environment update and remain untouched:
 
 - `custom_nodes/` and their repositories;
 - `models/`, `workflows/`, input, output and user data;
-- `custom_node_runtime/site-packages/`, the persistent node-package overlay;
+- `custom_node_runtime/`, the persistent shared custom-node venv;
 - launcher configuration and logs.
 
 Python, Torch, CUDA and the locked Core dependency set therefore update only
@@ -100,7 +101,7 @@ rules.
 If `custom_node_runtime/` already contains packages, the installer compares
 the candidate's Python, Torch-family, CUDA and platform ABI fields with the
 active manifest. It accepts compatible environment updates, but refuses an ABI
-change until that persistent overlay is moved aside or rebuilt for the new
+change until that persistent venv is moved aside or rebuilt for the new
 generation.
 
 This version installs only a bundle the user selects locally. The validated
@@ -114,20 +115,24 @@ ComfyUI discovers custom-node repositories from the top-level
 Frontend extensions declared by a node's `WEB_DIRECTORY` continue to load in
 the embedded web interface.
 
-Custom nodes run in the same Python process and use the interpreter at
-`ComfyUI/runtime/python`; they do **not** each receive a virtual environment.
-ComfyUI Manager 4.2.2 is included. Node-only packages that must survive an
-environment swap belong in the top-level
-`custom_node_runtime/site-packages/` overlay, never in the replaceable
-environment's locked site-packages. A node may still conflict with another
-node's packages or with a new environment baseline, so back up the portable
-directory before installing unknown nodes. Environment updates never delete
-the overlay.
+Custom nodes run in the same Python process and share the top-level
+`custom_node_runtime/` virtual environment; they do **not** each receive an
+isolated environment. That venv is created offline on first launch with
+`--system-site-packages --without-pip`, so it inherits pip, Torch and locked
+Core dependencies from the active `ComfyUI/runtime/python` while keeping
+node-installed packages and their normal pip metadata outside replaceable
+`ComfyUI/`. ComfyUI Manager 4.2.2 is included and its ordinary
+`python -m pip` install, upgrade and uninstall operations target this venv. A
+node may still conflict with another node's packages or with a new environment
+baseline, so back up the portable directory before installing unknown nodes.
+Environment updates never delete the venv.
 
 When the portable root moves, the launcher detects the new Python prefix and
-repairs pip-generated console-script shebangs and remaining text metadata
-before starting ComfyUI. The interpreter and libpython themselves use
-relative runtime-library paths.
+rebinds the venv to the active `ComfyUI/runtime/python`, repairs pip-generated
+console-script shebangs and remaining text metadata, and validates pip before
+starting ComfyUI. Candidate update preflight uses only the candidate base
+interpreter and cannot import packages from the persistent venv. The
+interpreter and libpython themselves use relative runtime-library paths.
 
 The bundled interpreter makes Python packages portable; it cannot make every
 arbitrary node self-contained. Nodes that invoke host programs, compile native

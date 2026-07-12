@@ -193,7 +193,7 @@ def test_complete_environment_update_preserves_every_persistent_area(
     }
 
 
-def test_candidate_preflight_uses_candidate_python_without_node_overlay(
+def test_candidate_preflight_uses_candidate_python_without_node_runtime(
     portable_root: PortablePaths, tmp_path: Path
 ) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []

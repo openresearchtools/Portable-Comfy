@@ -24,8 +24,8 @@ SENTINELS = {
     "workflows/environment-update-smoke.json": b'{"persistent": "workflow"}\n',
     "user/environment-update-smoke.txt": b"persistent user data\n",
     "output/environment-update-smoke.txt": b"persistent output\n",
-    "custom_node_runtime/site-packages/portable_update_smoke_node_dep.py": (
-        b"SENTINEL = 'persistent node dependency'\n"
+    "custom_node_runtime/environment-update-smoke.sentinel": (
+        b"persistent node runtime\n"
     ),
 }
 
@@ -55,10 +55,10 @@ def active_runtime(paths: PortablePaths, runtime: dict[str, str]) -> None:
         "print(json.dumps({'python':platform.python_version(),"
         "'torch':torch.__version__,'torchvision':torchvision.__version__,"
         "'torchaudio':torchaudio.__version__,'cuda':torch.version.cuda,"
-        "'node_overlay':node_dep.SENTINEL}))"
+        "'node_runtime':node_dep.SENTINEL}))"
     )
     completed = subprocess.run(
-        [str(paths.python_executable()), "-s", "-c", script],
+        [str(paths.custom_node_python), "-s", "-c", script],
         cwd=paths.comfyui,
         env=paths.server_environment(),
         text=True,
@@ -78,8 +78,8 @@ def active_runtime(paths: PortablePaths, runtime: dict[str, str]) -> None:
     }
     if {key: actual[key] for key in wanted} != wanted:
         raise RuntimeError(f"active runtime mismatch: {actual!r} != {wanted!r}")
-    if actual["node_overlay"] != "persistent node dependency":
-        raise RuntimeError("active runtime did not import the persistent node overlay")
+    if actual["node_runtime"] != "persistent node dependency":
+        raise RuntimeError("active runtime did not import the persistent node venv")
 
 
 def main() -> None:
@@ -92,6 +92,8 @@ def main() -> None:
     paths = PortablePaths(args.portable_root)
     paths.create_layout()
     paths.validate_runtime()
+    paths.repair_runtime_metadata()
+    paths.ensure_node_runtime()
     manager_config = paths.manager_config.read_bytes()
     manager_text = manager_config.decode("utf-8")
     if (
@@ -99,10 +101,17 @@ def main() -> None:
         or "use_unified_resolver = false" not in manager_text
     ):
         raise RuntimeError(
-            "ComfyUI Manager is not configured for the persistent pip overlay"
+            "ComfyUI Manager is not configured for the persistent node venv"
         )
 
     sentinels = write_sentinels(paths.root)
+    node_dependency = (
+        paths.custom_node_site_packages / "portable_update_smoke_node_dep.py"
+    )
+    node_dependency.write_text(
+        "SENTINEL = 'persistent node dependency'\n", encoding="utf-8"
+    )
+    sentinels[node_dependency] = node_dependency.read_bytes()
     old_generation_marker = (
         paths.comfyui / "environment-update-smoke-old-generation.txt"
     )

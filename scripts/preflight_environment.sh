@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 export PYTHONDONTWRITEBYTECODE=1
-unset PORTABLE_COMFY_NODE_SITE_PACKAGES PIP_TARGET PYTHONPATH VIRTUAL_ENV
+unset PIP_TARGET PYTHONPATH PYTHONHOME VIRTUAL_ENV
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"

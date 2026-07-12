@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
-import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,16 +15,11 @@ def portable_root(tmp_path: Path) -> PortablePaths:
     paths.create_layout()
     (paths.python_prefix / "bin").mkdir(parents=True)
     python = paths.python_prefix / "bin" / "python-portable"
-    # The production executable belongs to this prefix. A test symlink to the
-    # host interpreter would receive the intentionally isolated PYTHONHOME and
-    # fail before running our fixture server, so use a tiny environment bridge.
-    python.write_text(
-        "#!/bin/sh\nunset PYTHONHOME\nexec "
-        + shlex.quote(os.sys.executable)
-        + ' "$@"\n',
-        encoding="utf-8",
-    )
-    python.chmod(0o755)
+    python.symlink_to(sys.executable)
+    (paths.python_prefix / "bin" / "python3").symlink_to(sys.executable)
+    # Rebinding pyvenv.cfg makes the fake prefix the base prefix. Expose the
+    # host standard library beneath it so the persistent venv remains real.
+    (paths.python_prefix / "lib").symlink_to(Path(sys.base_prefix) / "lib")
     (paths.comfyui / "frontend").mkdir(parents=True)
     (paths.comfyui / "main.py").write_text("# test core\n", encoding="utf-8")
     (paths.frontend / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
@@ -49,4 +43,5 @@ def portable_root(tmp_path: Path) -> PortablePaths:
         ),
         encoding="utf-8",
     )
+    paths.ensure_node_runtime()
     return paths

@@ -152,9 +152,9 @@ ComfyUI quick tests, atomically swap the complete generation, start and
 health-check it, and retain the old generation for rollback. Sentinels under
 `models/`, `custom_nodes/`, `workflows/`, `user/`, `output/` and
 `custom_node_runtime/` must remain byte-identical, and the activated runtime
-must import a module from the persistent node overlay. The workflow installs
-the same locked generation already present in the full archive, so this
-non-empty overlay also proves a compatible manifest passes the ABI guard.
+must import a module installed in the persistent node venv. The workflow
+installs the same locked generation already present in the full archive, so
+this non-empty venv also proves a compatible manifest passes the ABI guard.
 
 The downloaded first-install smoke test runs without an NVIDIA GPU and uses
 `--allow-no-gpu` solely to check:

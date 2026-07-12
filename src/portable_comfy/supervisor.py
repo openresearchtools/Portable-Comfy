@@ -109,8 +109,9 @@ class ServerSupervisor:
             )
 
     def start(self) -> str:
-        self.paths.validate_runtime()
         self.paths.create_layout()
+        self.paths.validate_runtime()
+        self.paths.ensure_node_runtime()
         with self._lock:
             self._refresh_locked()
             if self._process is not None:

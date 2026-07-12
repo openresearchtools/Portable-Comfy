@@ -36,7 +36,7 @@ mkdir -p -- "$portable_root" "$output_dir"
 
 # Persistent data is deliberately outside the atomically replaceable ComfyUI/.
 data_dirs=(
-  custom_nodes custom_node_runtime/bin custom_node_runtime/site-packages
+  custom_nodes custom_node_runtime
   input output temp workflows
   logs config manifest user/default
   models/checkpoints models/configs models/loras models/vae models/text_encoders

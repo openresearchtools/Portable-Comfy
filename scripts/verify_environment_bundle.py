@@ -280,10 +280,6 @@ def main() -> None:
             [
                 comfyui / "runtime/python/bin/python-portable",
                 comfyui / "runtime/python/bin/repair-portable-entrypoints",
-                comfyui
-                / "runtime/python/lib"
-                / f"python{str(runtime['python']).rsplit('.', 1)[0]}"
-                / "site-packages/portable_comfy_node_overlay.pth",
             ]
         )
     if any(not path.is_file() for path in required):

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import configparser
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -16,8 +19,7 @@ class LayoutError(RuntimeError):
 
 PERSISTENT_DIRECTORIES = (
     "custom_nodes",
-    "custom_node_runtime/site-packages",
-    "custom_node_runtime/bin",
+    "custom_node_runtime",
     "models",
     "input",
     "output",
@@ -85,11 +87,20 @@ class PortablePaths:
 
     @property
     def custom_node_site_packages(self) -> Path:
+        candidates = sorted(self.custom_node_runtime.glob("lib/python*/site-packages"))
+        if len(candidates) == 1:
+            return candidates[0]
+        # This is the location used by the old target-directory overlay.  It is
+        # also a useful deterministic path before the venv has been created.
         return self.custom_node_runtime / "site-packages"
 
     @property
     def custom_node_bin(self) -> Path:
         return self.custom_node_runtime / "bin"
+
+    @property
+    def custom_node_python(self) -> Path:
+        return self.custom_node_bin / "python"
 
     @property
     def python(self) -> Path:
@@ -190,7 +201,7 @@ class PortablePaths:
             (self.root / relative).mkdir(parents=True, exist_ok=True)
         (self.root / "user" / "default").mkdir(parents=True, exist_ok=True)
         self._ensure_workflow_link()
-        self._ensure_node_overlay_manager_config()
+        self._ensure_node_runtime_manager_config()
         if not self.extra_model_paths.exists():
             self.extra_model_paths.write_text(
                 "# Secondary source-tree configs; user models remain at the portable root.\n"
@@ -200,18 +211,20 @@ class PortablePaths:
                 encoding="utf-8",
             )
 
-    def _ensure_node_overlay_manager_config(self) -> None:
-        """Make Manager's default installer honour pip's persistent target.
+    def _ensure_node_runtime_manager_config(self) -> None:
+        """Keep Manager installs in the interpreter that launched ComfyUI.
 
-        Manager's uv mode explicitly selects the active interpreter and would
-        therefore write inside the replaceable environment. Normal pip honours
-        ``PIP_TARGET``. Existing user configuration is never overwritten.
+        The launcher uses the persistent custom-node venv. Manager's ordinary
+        ``python -m pip`` operations therefore have normal install, upgrade and
+        uninstall semantics there. Its alternate resolvers may select the
+        replaceable base interpreter explicitly, so they remain disabled.
+        Existing unrelated user configuration is preserved.
         """
 
         self.manager_config.parent.mkdir(parents=True, exist_ok=True)
         if not self.manager_config.exists():
             self.manager_config.write_text(
-                "# Portable Comfy keeps custom-node packages outside ComfyUI/.\n"
+                "# Portable Comfy keeps custom-node packages in its persistent venv.\n"
                 "[default]\n"
                 "use_uv = false\n"
                 "use_unified_resolver = false\n",
@@ -313,31 +326,276 @@ class PortablePaths:
         if stamp_text != str(prefix):
             changed += 1
         if prefix == self.python_prefix.resolve():
-            changed += self._repair_node_overlay_metadata()
+            changed += self._repair_node_runtime_metadata()
         return changed
 
-    def _repair_node_overlay_metadata(self) -> int:
-        """Relocate node-installed entry points and editable path records."""
+    def ensure_node_runtime(self, python_prefix: Path | None = None) -> int:
+        """Create, rebind, and validate the persistent custom-node venv.
+
+        Creation needs no network and deliberately omits a private pip copy.
+        The venv inherits pip, Torch, and Core dependencies from the active
+        replaceable runtime through ``--system-site-packages``. Packages later
+        installed by nodes live in the venv and retain normal pip metadata.
+        """
+
+        prefix = (
+            self.python_prefix if python_prefix is None else python_prefix
+        ).resolve()
+        base_python = self.python_executable(prefix=prefix)
+        version = self._query_base_python_version(base_python, prefix)
+        changed = 0
+        configuration = self.custom_node_runtime / "pyvenv.cfg"
+        if configuration.is_file():
+            configured = self._read_pyvenv_configuration(configuration)
+            configured_version = configured.get("version", "")
+            if self._python_abi(configured_version) != self._python_abi(version):
+                if self.node_runtime_has_packages():
+                    raise LayoutError(
+                        "the active Python baseline changed from "
+                        f"{configured_version or 'unknown'} to {version}, but the "
+                        "persistent custom-node venv contains packages; install a "
+                        "compatible environment or explicitly rebuild that venv"
+                    )
+                self._replace_node_runtime(base_python, prefix)
+                changed += 1
+        else:
+            venv_sites = sorted(
+                self.custom_node_runtime.glob("lib/python*/site-packages")
+            )
+            if venv_sites and any(
+                any(site_packages.iterdir()) for site_packages in venv_sites
+            ):
+                raise LayoutError(
+                    "persistent custom-node venv metadata is missing, but its "
+                    "site-packages contains data; refusing to rebuild it implicitly"
+                )
+            self._replace_node_runtime(base_python, prefix)
+            changed += 1
+        changed += self._repair_node_runtime_metadata(prefix, version=version)
+        self._validate_node_runtime(prefix)
+        return changed
+
+    def node_runtime_has_packages(self) -> bool:
+        """Return whether the persistent venv contains node-installed data."""
+
+        site_packages = self.custom_node_site_packages
+        if not site_packages.is_dir():
+            return False
+        ignored = {"__pycache__", ".DS_Store"}
+        return any(path.name not in ignored for path in site_packages.iterdir())
+
+    def _query_base_python_version(self, python: Path, prefix: Path) -> str:
+        environment = self.server_environment(
+            python_prefix=prefix, include_node_runtime=False
+        )
+        # python-portable establishes its own PYTHONHOME. Omitting the inherited
+        # value also lets test/development runtimes use a symlinked interpreter.
+        environment.pop("PYTHONHOME", None)
+        try:
+            completed = subprocess.run(
+                [
+                    str(python),
+                    "-s",
+                    "-c",
+                    "import platform;print(platform.python_version())",
+                ],
+                env=environment,
+                text=True,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise LayoutError(f"cannot inspect portable Python: {error}") from error
+        version = completed.stdout.strip().splitlines()
+        if completed.returncode or not version:
+            detail = (
+                completed.stderr or completed.stdout or "no version output"
+            ).strip()
+            raise LayoutError(f"portable Python could not initialize: {detail}")
+        return version[-1]
+
+    @staticmethod
+    def _python_abi(version: str) -> tuple[str, str]:
+        parts = version.strip().split(".")
+        return tuple((parts + [""])[:2])  # type: ignore[return-value]
+
+    @staticmethod
+    def _read_pyvenv_configuration(path: Path) -> dict[str, str]:
+        result: dict[str, str] = {}
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator:
+                    result[key.strip().lower()] = value.strip()
+        except (OSError, UnicodeError) as error:
+            raise LayoutError(
+                f"cannot read persistent venv metadata: {error}"
+            ) from error
+        return result
+
+    def _replace_node_runtime(self, base_python: Path, prefix: Path) -> None:
+        """Create a new venv and atomically migrate the former overlay."""
+
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = Path(
+            tempfile.mkdtemp(prefix=".custom-node-runtime-", dir=self.root)
+        )
+        backup: Path | None = None
+        environment = self.server_environment(
+            python_prefix=prefix, include_node_runtime=False
+        )
+        environment.pop("PYTHONHOME", None)
+        try:
+            completed = subprocess.run(
+                [
+                    str(base_python),
+                    "-s",
+                    "-m",
+                    "venv",
+                    "--system-site-packages",
+                    "--without-pip",
+                    str(temporary),
+                ],
+                env=environment,
+                text=True,
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+            if completed.returncode:
+                detail = (
+                    completed.stderr or completed.stdout or "unknown venv failure"
+                ).strip()
+                raise LayoutError(
+                    f"cannot create persistent custom-node venv: {detail}"
+                )
+            staged_sites = sorted(temporary.glob("lib/python*/site-packages"))
+            if len(staged_sites) != 1:
+                raise LayoutError(
+                    "new custom-node venv did not contain one site-packages directory"
+                )
+            if self.custom_node_runtime.exists():
+                self._copy_legacy_node_runtime(temporary, staged_sites[0])
+                backup = Path(
+                    tempfile.mkdtemp(prefix=".custom-node-runtime-old-", dir=self.root)
+                )
+                backup.rmdir()
+                self.custom_node_runtime.replace(backup)
+            temporary.replace(self.custom_node_runtime)
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
+        except Exception:
+            if (
+                backup is not None
+                and backup.exists()
+                and not self.custom_node_runtime.exists()
+            ):
+                backup.replace(self.custom_node_runtime)
+            raise
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+
+    def _copy_legacy_node_runtime(
+        self, staged_runtime: Path, staged_site_packages: Path
+    ) -> None:
+        old = self.custom_node_runtime
+        old_site = old / "site-packages"
+        if old_site.is_dir():
+            for source in old_site.iterdir():
+                self._copy_node_runtime_entry(
+                    source, staged_site_packages / source.name
+                )
+        old_bin = old / "bin"
+        if old_bin.is_dir():
+            for source in old_bin.iterdir():
+                if source.name.startswith("python") or source.name.lower().startswith(
+                    "activate"
+                ):
+                    continue
+                self._copy_node_runtime_entry(
+                    source, staged_runtime / "bin" / source.name
+                )
+        known = {
+            "site-packages",
+            "bin",
+            ".portable-comfy-root",
+            ".gitignore",
+            "pyvenv.cfg",
+            "lib",
+            "lib64",
+            "include",
+        }
+        for source in old.iterdir():
+            if source.name in known:
+                continue
+            self._copy_node_runtime_entry(source, staged_runtime / source.name)
+
+    @staticmethod
+    def _copy_node_runtime_entry(source: Path, destination: Path) -> None:
+        if destination.exists() or destination.is_symlink():
+            raise LayoutError(
+                f"cannot migrate persistent node runtime; duplicate {destination.name}"
+            )
+        if source.is_symlink():
+            destination.symlink_to(
+                os.readlink(source), target_is_directory=source.is_dir()
+            )
+        elif source.is_dir():
+            shutil.copytree(source, destination, symlinks=True)
+        else:
+            shutil.copy2(source, destination)
+
+    def _repair_node_runtime_metadata(
+        self, python_prefix: Path | None = None, *, version: str | None = None
+    ) -> int:
+        """Rebind venv metadata and entry points after the portable tree moves."""
 
         self.custom_node_runtime.mkdir(parents=True, exist_ok=True)
+        configuration = self.custom_node_runtime / "pyvenv.cfg"
+        if not configuration.is_file():
+            return 0
+        prefix = (
+            self.python_prefix if python_prefix is None else python_prefix
+        ).resolve()
+        configured = self._read_pyvenv_configuration(configuration)
+        selected_version = version or configured.get("version", "")
+        if not selected_version:
+            return 0
         stamp = self.custom_node_runtime / ".portable-comfy-root"
         try:
             previous = Path(stamp.read_text(encoding="utf-8").strip()).resolve()
         except (FileNotFoundError, OSError, ValueError):
             previous = self.root
         changed = 0
+        base_binary = prefix / "bin" / "python3"
+        if not base_binary.exists():
+            base_binary = self.python_executable(prefix=prefix)
+        for name in (
+            "python",
+            "python3",
+            f"python{self._python_abi(selected_version)[0]}.{self._python_abi(selected_version)[1]}",
+        ):
+            path = self.custom_node_bin / name
+            target = os.path.relpath(base_binary, self.custom_node_bin)
+            if path.is_symlink() and os.readlink(path) == target:
+                continue
+            if path.exists() or path.is_symlink():
+                path.unlink()
+            path.symlink_to(target)
+            changed += 1
         bin_locations = (
-            (self.custom_node_bin, "../.."),
-            (self.custom_node_site_packages / "bin", "../../.."),
+            (self.custom_node_bin, "python"),
+            (self.custom_node_site_packages / "bin", "../../../../bin/python"),
         )
-        for bin_dir, root_relative in bin_locations:
+        for bin_dir, python_relative in bin_locations:
             if not bin_dir.is_dir():
                 continue
             header = (
                 b"#!/bin/sh\n"
-                + b"'''exec' \"$(CDPATH= cd -- \"$(dirname -- \"$0\")/"
-                + root_relative.encode()
-                + b'" && pwd -P)/ComfyUI/runtime/python/bin/python3" -s "$0" "$@"\n'
+                + b"""\'\'\'exec\' "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/"""
+                + python_relative.encode()
+                + b"""" -s "$0" "$@"\n"""
                 + b"' '''\n"
             )
             for path in sorted(bin_dir.iterdir()):
@@ -371,10 +629,60 @@ class PortablePaths:
                 if old in data:
                     path.write_bytes(data.replace(old, new))
                     changed += 1
+        cfg_text = (
+            f"home = {prefix / 'bin'}\n"
+            "include-system-site-packages = true\n"
+            f"version = {selected_version}\n"
+            f"executable = {base_binary}\n"
+            f"command = {base_binary} -m venv --system-site-packages --without-pip {self.custom_node_runtime}\n"
+        )
+        if configuration.read_text(encoding="utf-8") != cfg_text:
+            temporary_cfg = configuration.with_suffix(".tmp")
+            temporary_cfg.write_text(cfg_text, encoding="utf-8")
+            temporary_cfg.replace(configuration)
+            changed += 1
         temporary = stamp.with_suffix(".tmp")
         temporary.write_text(str(self.root) + "\n", encoding="utf-8")
         temporary.replace(stamp)
+        if previous != self.root:
+            changed += 1
         return changed
+
+    def _validate_node_runtime(self, prefix: Path) -> None:
+        environment = self.server_environment(
+            python_prefix=prefix, include_node_runtime=True
+        )
+        script = (
+            "import pathlib,sys,pip; "
+            "expected=pathlib.Path(sys.argv[1]).resolve(); "
+            "actual=pathlib.Path(sys.prefix).resolve(); "
+            "assert actual == expected,(actual,expected); "
+            "assert sys.prefix != sys.base_prefix"
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    str(self.custom_node_python),
+                    "-s",
+                    "-c",
+                    script,
+                    str(self.custom_node_runtime),
+                ],
+                env=environment,
+                text=True,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise LayoutError(
+                f"cannot start persistent custom-node venv: {error}"
+            ) from error
+        if completed.returncode:
+            detail = (
+                completed.stderr or completed.stdout or "unknown venv error"
+            ).strip()
+            raise LayoutError(f"persistent custom-node venv is unusable: {detail}")
 
     def _ensure_workflow_link(self) -> None:
         link = self.workflow_link
@@ -434,6 +742,7 @@ class PortablePaths:
         user_directory: Path | None = None,
         temp_directory: Path | None = None,
         extra_args: Sequence[str] = (),
+        use_node_runtime: bool = True,
         validate: bool = False,
     ) -> list[str]:
         """Build the shell-free command used for normal and staged Core runs."""
@@ -457,8 +766,21 @@ class PortablePaths:
         database = database_url or f"sqlite:///{self.database}"
         selected_base = self.root if base_directory is None else base_directory
         selected_user = self.root / "user" if user_directory is None else user_directory
+        interpreter = (
+            self.custom_node_python
+            if use_node_runtime
+            else self.python_executable(prefix=selected_prefix, require=validate)
+        )
+        if (
+            validate
+            and use_node_runtime
+            and not (interpreter.is_file() and os.access(interpreter, os.X_OK))
+        ):
+            raise LayoutError(
+                "persistent custom-node venv is missing; initialize it before launch"
+            )
         command = [
-            str(self.python_executable(prefix=selected_prefix, require=validate)),
+            str(interpreter),
             "-s",
             str(main),
             "--listen",
@@ -496,7 +818,7 @@ class PortablePaths:
         *,
         python_prefix: Path | None = None,
         comfyui_path: Path | None = None,
-        include_node_overlay: bool = True,
+        include_node_runtime: bool = True,
         cache_root: Path | None = None,
     ) -> dict[str, str]:
         """Return an isolated environment for the external portable interpreter."""
@@ -540,7 +862,6 @@ class PortablePaths:
         selected_cache = self.root / "cache" if cache_root is None else cache_root
         env.update(
             {
-                "PYTHONHOME": str(selected_prefix),
                 "PYTHONNOUSERSITE": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PATH": f"{selected_prefix / 'bin'}{os.pathsep}{env.get('PATH', '')}",
@@ -563,20 +884,18 @@ class PortablePaths:
                 "UV_CACHE_DIR": str(selected_cache / "uv"),
             }
         )
-        if include_node_overlay:
-            node_paths = (self.custom_node_bin, self.custom_node_site_packages / "bin")
-            env["PATH"] = (
-                os.pathsep.join(map(str, node_paths)) + os.pathsep + env["PATH"]
-            )
-            # pip honours PIP_TARGET for Manager's normal `python -m pip`
-            # installs. PYTHONPATH makes that target importable ahead of the
-            # replaceable base packages without modifying the base generation.
-            env["PYTHONPATH"] = str(self.custom_node_site_packages)
-            env["PYTHONUSERBASE"] = str(self.custom_node_runtime)
-            env["PIP_TARGET"] = str(self.custom_node_site_packages)
-            env["PORTABLE_COMFY_NODE_SITE_PACKAGES"] = str(
-                self.custom_node_site_packages
-            )
+        if include_node_runtime:
+            env["VIRTUAL_ENV"] = str(self.custom_node_runtime)
+            env["PATH"] = f"{self.custom_node_bin}{os.pathsep}{env['PATH']}"
+            # Manager's alternate resolvers are disabled because they may
+            # explicitly select the replaceable base interpreter. Keep direct
+            # uv calls pointed at the persistent venv as an additional guard.
+            env["UV_PROJECT_ENVIRONMENT"] = str(self.custom_node_runtime)
+            env["UV_PYTHON"] = str(self.custom_node_python)
+        else:
+            # A standalone base runtime needs PYTHONHOME. It must never leak
+            # into normal venv launches, where it would bypass the venv prefix.
+            env["PYTHONHOME"] = str(selected_prefix)
         return env
 
     def portable_environment(

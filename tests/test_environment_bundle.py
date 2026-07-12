@@ -17,7 +17,6 @@ def make_environment(root: Path) -> Path:
     comfyui = root / "ComfyUI"
     (comfyui / "frontend").mkdir(parents=True)
     (comfyui / "runtime/python/bin").mkdir(parents=True)
-    (comfyui / "runtime/python/lib/python3.13/site-packages").mkdir(parents=True)
     (comfyui / "main.py").write_text("# test Core\n", encoding="utf-8")
     (comfyui / "frontend/index.html").write_text("<!doctype html>\n", encoding="utf-8")
     (comfyui / "runtime/requirements.lock").write_bytes(CONSTRAINTS.read_bytes())
@@ -25,15 +24,6 @@ def make_environment(root: Path) -> Path:
         path = comfyui / "runtime/python/bin" / name
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
-    overlay_hook = (
-        comfyui
-        / "runtime/python/lib/python3.13/site-packages/portable_comfy_node_overlay.pth"
-    )
-    overlay_hook.write_text(
-        "import os,site; p=os.environ.get('PORTABLE_COMFY_NODE_SITE_PACKAGES'); "
-        "p and site.addsitedir(p)\n",
-        encoding="utf-8",
-    )
     (comfyui / "main-link.py").symlink_to("main.py")
     return comfyui
 

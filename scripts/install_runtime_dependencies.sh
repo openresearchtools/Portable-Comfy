@@ -35,22 +35,6 @@ export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$REPO_ROOT/.cache/pip}"
 "$python" -m pip freeze --all | LC_ALL=C sort >"$comfyui_root/runtime/installed-requirements.txt"
 "$python" "$SCRIPT_DIR/collect_licenses.py" "$comfyui_root/runtime/LICENSES/python-packages"
 
-# Node-only packages live outside the replaceable environment. A .pth import
-# hook uses addsitedir (rather than plain PYTHONPATH semantics) so nested .pth
-# files installed in that persistent overlay are processed as well. Candidate
-# update preflight omits the environment variable and therefore stays isolated.
-"$python" - <<'PY'
-from pathlib import Path
-import sysconfig
-
-hook = Path(sysconfig.get_path("purelib")) / "portable_comfy_node_overlay.pth"
-hook.write_text(
-    "import os,site; p=os.environ.get('PORTABLE_COMFY_NODE_SITE_PACKAGES'); "
-    "p and site.addsitedir(p)\n",
-    encoding="utf-8",
-)
-PY
-
 "$python" - <<PY
 import importlib.util
 import json
