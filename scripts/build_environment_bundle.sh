@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build one atomic ComfyUI source/frontend/Python/Torch environment update.
+# Build one atomic full-ComfyUI Core bundle, including Python/Torch/CUDA.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -30,7 +30,7 @@ work_dir="$(absolute_path "$work_dir")"
 if [[ -n "$source_root" ]]; then
   source_root="$(absolute_path "$source_root")"
 fi
-bundle_basename="$(environment_bundle_basename)"
+bundle_basename="$(core_bundle_basename)"
 stage="$work_dir/$bundle_basename"
 archive="$output_dir/$bundle_basename.tar.gz"
 generation_id="$(environment_generation_id)"

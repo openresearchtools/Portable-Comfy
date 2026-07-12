@@ -18,7 +18,7 @@ portable-comfy --root /tmp/Portable-Comfy --self-test
 ```
 
 The self-test is non-interactive and must not require a running ComfyUI server
-or display. The manifest tests build a tiny structural environment archive and
+or display. The manifest tests build a tiny structural full-Core archive and
 prove that persistent directories are excluded, every Core/runtime file is
 bound, and tampering or unsafe links are rejected.
 
@@ -50,7 +50,7 @@ scripts/preflight_portable.sh \
   artifacts/Portable-Comfy-linux-x86_64.tar.gz
 
 scripts/preflight_environment.sh \
-  artifacts/Portable-Comfy-environment-v0.27.0.tar.gz
+  artifacts/Portable-Comfy-core-v0.27.0.tar.gz
 
 scripts/smoke_artifact.sh \
   artifacts/Portable-Comfy-linux-x86_64.tar.gz \
@@ -93,7 +93,7 @@ Those modes are not release-equivalent. A normal build produces:
 
 ```text
 Portable-Comfy-linux-x86_64.tar.gz
-Portable-Comfy-environment-v0.27.0.tar.gz
+Portable-Comfy-core-v0.27.0.tar.gz
 ```
 
 The complete first-install archive contains the AppImage, atomic `ComfyUI/`
@@ -101,11 +101,12 @@ environment, persistent directory layout, and eight pinned TAESD preview
 encoder/decoder weights under `models/vae_approx/`. It does not include user
 checkpoints or other generation models.
 
-The environment archive contains one outer versioned directory, the complete
+The full-Core archive contains one outer versioned directory, the complete
 `ComfyUI/` generation (Core, matching frontend, source-built Python, locked
 requirements and Torch/CUDA), and `manifest/environment.json` plus its checksum
-list. It excludes `models/`, `custom_nodes/`, `custom_node_runtime/`, workflows,
-user/input/output/temp data, config and logs.
+list. "Core" here names the whole replaceable environment, not a source-only
+payload. It excludes `models/`, `custom_nodes/`, `custom_node_runtime/`,
+workflows, user/input/output/temp data, config and logs.
 
 The named baseline and every currently resolved Core Python distribution are
 exact pre-build pins in `packaging/runtime-constraints.txt`. Each environment
@@ -115,6 +116,22 @@ manifest. This prevents ordinary transitive-version drift. The artifacts are
 not claimed to be byte-for-byte reproducible because all wheel bytes and build
 tools are not yet hash-locked.
 
+`packaging/versions.env` is the authoritative mapping for a generation. For a
+future upstream ComfyUI release, update `COMFY_VERSION` and `COMFY_TAG` to the
+release, pin `COMFY_COMMIT` to that tag's exact commit, and update its archive
+digest. Pin the frontend version/commit that belongs with that Core release,
+then select and lock the complete Python/Torch/CUDA set as one compatibility
+unit. Both artifacts expose that mapping in the top
+`manifest/environment.json` and the byte-identical visible
+`ComfyUI/PORTABLE-COMFY-IDENTITY.json`; a version label alone is never treated
+as a source pin.
+
+During source preparation, the builder parses the pinned snapshot's
+`comfyui_version.py` and aborts unless its literal `__version__` equals
+`COMFY_VERSION`. It also requires that snapshot's `requirements.txt` to contain
+exactly `comfyui-frontend-package==${FRONTEND_VERSION}` before accepting the
+separately pinned compiled frontend wheel.
+
 ## GitHub Actions artifacts
 
 Run `.github/workflows/build-artifacts.yml` manually from the repository's
@@ -122,7 +139,7 @@ Actions tab. It performs these gates:
 
 1. Builds on Ubuntu 22.04 so generated native binaries retain the supported
    glibc 2.35 baseline, reclaiming unused hosted-runner SDKs first.
-2. Builds the complete first-install archive, then creates the environment
+2. Builds the complete first-install archive, then creates the full-Core
    archive from that exact completed staging tree without reinstalling
    dependencies.
 3. Structurally preflights both archives after relocation, exercises their
@@ -155,10 +172,11 @@ substitute a smaller CPU package.
 
 ## What preflight and optional local smoke tests prove
 
-The environment preflight verifies archive safety, the complete schema-v2 file
-and symlink manifest, requirements-lock identity, candidate-runtime relocation,
-pinned imports and a freshly compiled native extension. It runs the interpreter
-inside the candidate `ComfyUI/`, never the active/full archive's runtime.
+The full-Core preflight verifies archive safety, the complete schema-v2 file
+and symlink manifest, equality with the visible in-folder identity,
+requirements-lock identity, candidate-runtime relocation, pinned imports and a
+freshly compiled native extension. It runs the interpreter inside the candidate
+`ComfyUI/`, never the active/full archive's runtime.
 
 The optional local transactional-update smoke uses `EnvironmentUpdater` itself to stage
 that downloaded archive, run the candidate's version/import, `pip check` and

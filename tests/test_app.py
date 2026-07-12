@@ -41,6 +41,7 @@ class _Window:
     def __init__(self) -> None:
         self.urls: list[str] = []
         self.pages: list[str] = []
+        self.confirmations: list[tuple[str, str]] = []
 
     def load_url(self, value: str) -> None:
         self.urls.append(value)
@@ -48,7 +49,8 @@ class _Window:
     def load_html(self, value: str) -> None:
         self.pages.append(value)
 
-    def create_confirmation_dialog(self, *_args: object) -> bool:
+    def create_confirmation_dialog(self, title: str, message: str) -> bool:
+        self.confirmations.append((title, message))
         return True
 
 
@@ -92,11 +94,11 @@ def test_native_menu_exposes_lifecycle_and_updater(tmp_path: Path) -> None:
     assert [menu.title for menu in menus] == [
         "Server",
         "View",
-        "Environment",
+        "Core",
         "Help",
     ]
     assert [item.title for item in menus[0].items] == ["Start", "Stop", "Restart"]
-    assert [item.title for item in menus[2].items] == ["Install bundle…"]
+    assert [item.title for item in menus[2].items] == ["Install complete bundle…"]
     controller._start()
     assert window.urls == [supervisor.url]
     controller._restart()
@@ -104,6 +106,67 @@ def test_native_menu_exposes_lifecycle_and_updater(tmp_path: Path) -> None:
     controller._stop()
     assert "Server stopped" in window.pages[-1]
     assert controller.closing() is True and supervisor.stops >= 3
+
+
+def test_about_shows_installed_complete_core_identity(tmp_path: Path) -> None:
+    paths = PortablePaths(tmp_path)
+    paths.comfyui.mkdir(parents=True)
+    identity = {
+        "schema_version": 1,
+        "app_id": "portable-comfy",
+        "generation_id": "comfyui-v0.27.0-exact-generation",
+        "core": {"version": "0.27.0", "tag": "v0.27.0", "commit": "core-sha"},
+        "frontend": {"version": "1.45.20", "commit": "frontend-sha"},
+        "runtime": {
+            "python": "3.13.12",
+            "torch": "2.12.0+cu130",
+            "torchvision": "0.27.0+cu130",
+            "torchaudio": "2.11.0+cu130",
+            "cuda": "13.0",
+        },
+    }
+    (paths.comfyui / "PORTABLE-COMFY-IDENTITY.json").write_text(
+        json.dumps(identity), encoding="utf-8"
+    )
+    window = _Window()
+    controller = DesktopController(
+        window,
+        paths,
+        _Supervisor(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        auto_start=False,
+    )
+
+    controller.about()
+
+    title, message = window.confirmations[-1]
+    assert title == "About Portable Comfy"
+    for expected in (
+        "Installed generation: comfyui-v0.27.0-exact-generation",
+        "Core: 0.27.0 (v0.27.0)",
+        "Core commit: core-sha",
+        "Frontend: 1.45.20",
+        "Frontend commit: frontend-sha",
+        "Python: 3.13.12",
+        "Torch: 2.12.0+cu130",
+        "CUDA: 13.0",
+    ):
+        assert expected in message
+
+
+def test_about_gracefully_handles_missing_identity(tmp_path: Path) -> None:
+    window = _Window()
+    controller = DesktopController(
+        window,
+        PortablePaths(tmp_path),
+        _Supervisor(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        auto_start=False,
+    )
+
+    controller.about()
+
+    assert "Installed Core identity: unavailable" in window.confirmations[-1][1]
 
 
 def test_main_locks_before_runtime_repair(

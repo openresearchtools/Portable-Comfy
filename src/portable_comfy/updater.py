@@ -26,10 +26,14 @@ from .supervisor import ServerSupervisor
 SCHEMA_VERSION = 2
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GENERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
-ARCHIVE_ROOT = re.compile(r"^Portable-Comfy-environment-[A-Za-z0-9._+-]+$")
+# "Core bundle" is the public artifact name. It always means the complete,
+# self-contained ComfyUI/ generation: Core source, matching frontend, private
+# Python, Torch/CUDA and every locked Core dependency.
+ARCHIVE_ROOT = re.compile(r"^Portable-Comfy-core-[A-Za-z0-9._+-]+$")
 MAX_MEMBERS = 500_000
 MAX_UNPACKED_BYTES = 32 * 1024**3
 TRANSACTION_MARKER = "environment-update-transaction.json"
+IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_FIELDS = (
     "python",
     "torch",
@@ -51,7 +55,7 @@ NODE_EXTENSION_ABI_FIELDS = (
 
 
 class UpdateError(RuntimeError):
-    """An environment update could not be completed safely."""
+    """A complete Core/environment update could not be completed safely."""
 
 
 class BundleValidationError(UpdateError):
@@ -188,7 +192,7 @@ class EnvironmentUpdater:
             restored = True
         elif not paths.comfyui.is_dir():
             raise UpdateError(
-                "an interrupted environment update left neither an active generation "
+                "an interrupted full-Core update left neither an active generation "
                 f"nor its rollback; inspect {transaction}"
             )
         marker.unlink(missing_ok=True)
@@ -201,7 +205,7 @@ class EnvironmentUpdater:
 
         source = Path(archive).expanduser().resolve()
         if not source.is_file():
-            raise UpdateError(f"environment bundle does not exist: {source}")
+            raise UpdateError(f"Core bundle does not exist: {source}")
         self.paths.create_layout()
         with (
             self._thread_lock,
@@ -257,7 +261,7 @@ class EnvironmentUpdater:
             opened = tarfile.open(archive, mode="r:gz")
         except (OSError, tarfile.TarError) as error:
             raise BundleValidationError(
-                f"cannot open gzip environment bundle: {error}"
+                f"cannot open gzip Core bundle: {error}"
             ) from error
 
         with opened:
@@ -273,7 +277,7 @@ class EnvironmentUpdater:
             outer = next(iter(top_levels))
             if not ARCHIVE_ROOT.fullmatch(outer):
                 raise BundleValidationError(
-                    "bundle root must be Portable-Comfy-environment-<version>"
+                    "bundle root must be Portable-Comfy-core-<version>"
                 )
 
             seen: set[str] = set()
@@ -477,6 +481,28 @@ class EnvironmentUpdater:
         if checksum_entries != {path: value[0] for path, value in regular.items()}:
             raise BundleValidationError(
                 "environment-checksums.sha256 disagrees with environment.json"
+            )
+
+        identity_path = root / "ComfyUI" / IDENTITY_NAME
+        if f"ComfyUI/{IDENTITY_NAME}" not in regular:
+            raise BundleValidationError(
+                f"{IDENTITY_NAME} is absent from the payload manifest"
+            )
+        try:
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise BundleValidationError(f"invalid {IDENTITY_NAME}: {error}") from error
+        wanted_identity = {
+            "schema_version": 1,
+            "app_id": manifest["app_id"],
+            "generation_id": manifest["generation_id"],
+            "core": manifest["core"],
+            "frontend": manifest["frontend"],
+            "runtime": manifest["runtime"],
+        }
+        if identity != wanted_identity:
+            raise BundleValidationError(
+                f"{IDENTITY_NAME} disagrees with environment.json"
             )
 
         required = (
@@ -745,7 +771,7 @@ class EnvironmentUpdater:
                 self._clear_transaction(transaction)
             except Exception as rollback_error:
                 rollback_errors.append(f"rollback failed: {rollback_error}")
-            detail = f"environment update failed and was rolled back: {error}"
+            detail = f"full-Core update failed and was rolled back: {error}"
             if rollback_errors:
                 detail += "; " + "; ".join(rollback_errors)
             raise UpdateError(detail) from error

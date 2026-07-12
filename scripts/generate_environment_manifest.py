@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
+
+
 def digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as stream:
@@ -27,10 +30,25 @@ def created_at() -> str:
     )
 
 
+def atomic_write_if_changed(path: Path, content: bytes) -> None:
+    try:
+        if path.read_bytes() == content:
+            return
+    except FileNotFoundError:
+        pass
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(content)
+        temporary.chmod(0o644)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def contained_symlink(root: Path, path: Path) -> tuple[str, Path]:
     target = os.readlink(path)
     if not target or "\\" in target or "\x00" in target or os.path.isabs(target):
-        raise SystemExit(f"unsafe links are forbidden in environment bundles: {path}")
+        raise SystemExit(f"unsafe links are forbidden in Core bundles: {path}")
     resolved = (path.parent / target).resolve(strict=False)
     try:
         resolved.relative_to(root)
@@ -69,9 +87,7 @@ def payload_entries(root: Path) -> list[dict[str, object]]:
                 }
             )
         elif not stat.S_ISDIR(mode):
-            raise SystemExit(
-                f"special files are forbidden in environment bundles: {path}"
-            )
+            raise SystemExit(f"special files are forbidden in Core bundles: {path}")
     return result
 
 
@@ -99,32 +115,51 @@ def main() -> None:
     args = parser.parse_args()
 
     root = args.root.resolve()
+    core = {
+        "version": args.core_version,
+        "tag": args.core_tag,
+        "commit": args.core_commit,
+    }
+    frontend = {
+        "version": args.frontend_version,
+        "commit": args.frontend_commit,
+    }
+    runtime = {
+        "python": args.python,
+        "torch": args.torch,
+        "torchvision": args.torchvision,
+        "torchaudio": args.torchaudio,
+        "cuda": args.cuda,
+        "platform": args.platform,
+        "requirements_lock_path": args.requirements_lock_path,
+        "requirements_lock_sha256": args.requirements_lock_sha256,
+    }
+    identity = {
+        "schema_version": 1,
+        "app_id": "portable-comfy",
+        "generation_id": args.generation_id,
+        "core": core,
+        "frontend": frontend,
+        "runtime": runtime,
+    }
+    identity_path = root / "ComfyUI" / IDENTITY_NAME
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    (root / "ComfyUI" / ".portable-comfy.json").unlink(missing_ok=True)
+    atomic_write_if_changed(
+        identity_path,
+        (json.dumps(identity, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+
     files = payload_entries(root)
     manifest = {
         "schema_version": 2,
         "bundle_type": "environment",
-        "app_id": "portable-comfy",
-        "generation_id": args.generation_id,
+        "app_id": identity["app_id"],
+        "generation_id": identity["generation_id"],
         "created_at": created_at(),
-        "core": {
-            "version": args.core_version,
-            "tag": args.core_tag,
-            "commit": args.core_commit,
-        },
-        "frontend": {
-            "version": args.frontend_version,
-            "commit": args.frontend_commit,
-        },
-        "runtime": {
-            "python": args.python,
-            "torch": args.torch,
-            "torchvision": args.torchvision,
-            "torchaudio": args.torchaudio,
-            "cuda": args.cuda,
-            "platform": args.platform,
-            "requirements_lock_path": args.requirements_lock_path,
-            "requirements_lock_sha256": args.requirements_lock_sha256,
-        },
+        "core": core,
+        "frontend": frontend,
+        "runtime": runtime,
         "files": files,
     }
     output = root / args.output

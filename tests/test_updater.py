@@ -69,8 +69,9 @@ def make_bundle(
     tamper: bool = False,
     unsafe_link: str | None = None,
     runtime_overrides: dict[str, str] | None = None,
+    identity_mismatch: bool = False,
 ) -> Path:
-    outer = tmp_path / "Portable-Comfy-environment-v9.9.9"
+    outer = tmp_path / "Portable-Comfy-core-v9.9.9"
     core = outer / "ComfyUI"
     prefix = core / "runtime/python"
     (core / "frontend").mkdir(parents=True)
@@ -89,6 +90,27 @@ def make_bundle(
     if unsafe_link is not None:
         (core / "bad-link").symlink_to(unsafe_link)
 
+    runtime = {
+        **RUNTIME,
+        "requirements_lock_sha256": _sha256(lock),
+        **(runtime_overrides or {}),
+    }
+    core_identity = {"version": "9.9.9", "tag": "v9.9.9", "commit": "abc"}
+    frontend_identity = {"version": "8.8.8", "commit": "def"}
+    identity = {
+        "schema_version": 1,
+        "app_id": "portable-comfy",
+        "generation_id": "comfyui-v9.9.9-test-generation",
+        "core": core_identity,
+        "frontend": frontend_identity,
+        "runtime": runtime,
+    }
+    if identity_mismatch:
+        identity["core"] = {**core_identity, "version": "different"}
+    (core / "PORTABLE-COMFY-IDENTITY.json").write_text(
+        json.dumps(identity, sort_keys=True), encoding="utf-8"
+    )
+
     files: list[dict[str, object]] = []
     for path in sorted(core.rglob("*")):
         relative = path.relative_to(outer).as_posix()
@@ -105,18 +127,13 @@ def make_bundle(
                     "size": path.stat().st_size,
                 }
             )
-    runtime = {
-        **RUNTIME,
-        "requirements_lock_sha256": _sha256(lock),
-        **(runtime_overrides or {}),
-    }
     manifest = {
         "schema_version": 2,
         "bundle_type": "environment",
         "app_id": "portable-comfy",
         "generation_id": "comfyui-v9.9.9-test-generation",
-        "core": {"version": "9.9.9", "tag": "v9.9.9", "commit": "abc"},
-        "frontend": {"version": "8.8.8", "commit": "def"},
+        "core": core_identity,
+        "frontend": frontend_identity,
         "runtime": runtime,
         "files": files,
     }
@@ -277,6 +294,22 @@ def test_checksum_tampering_is_rejected_before_stop(
     assert supervisor.stops == 0
 
 
+def test_visible_identity_must_match_top_manifest(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    supervisor = FakeSupervisor()
+    updater = EnvironmentUpdater(
+        portable_root,
+        supervisor,
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(
+        BundleValidationError, match="PORTABLE-COMFY-IDENTITY.json disagrees"
+    ):
+        updater.install_bundle(make_bundle(tmp_path, identity_mismatch=True))
+    assert supervisor.stops == 0
+
+
 def test_manifested_dangling_symlink_is_rejected(
     portable_root: PortablePaths, tmp_path: Path
 ) -> None:
@@ -296,7 +329,7 @@ def test_unsafe_archive_members_are_rejected(
     portable_root: PortablePaths, tmp_path: Path, kind: str
 ) -> None:
     archive = tmp_path / f"{kind}.tar.gz"
-    outer = "Portable-Comfy-environment-v1"
+    outer = "Portable-Comfy-core-v1"
     with tarfile.open(archive, "w:gz") as output:
         if kind == "traversal":
             item = tarfile.TarInfo(f"{outer}/../escape")

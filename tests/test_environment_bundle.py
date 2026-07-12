@@ -13,12 +13,59 @@ CONSTRAINTS = REPO / "packaging/runtime-constraints.txt"
 LOCK_SHA256 = hashlib.sha256(CONSTRAINTS.read_bytes()).hexdigest()
 
 
+def pinned_versions() -> dict[str, str]:
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; env',
+            "portable-comfy-test",
+            str(REPO / "packaging/versions.env"),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    wanted = {
+        "COMFY_VERSION",
+        "COMFY_TAG",
+        "COMFY_COMMIT",
+        "FRONTEND_VERSION",
+        "FRONTEND_COMMIT",
+        "PYTHON_VERSION",
+        "TORCH_VERSION",
+        "TORCHVISION_VERSION",
+        "TORCHAUDIO_VERSION",
+        "CUDA_VERSION",
+    }
+    result: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in wanted:
+            result[key] = value
+    assert set(result) == wanted
+    return result
+
+
+PINNED = pinned_versions()
+PINNED_GENERATION = (
+    f"comfyui-v{PINNED['COMFY_VERSION']}-{PINNED['COMFY_COMMIT'][:12]}-"
+    f"frontend-{PINNED['FRONTEND_VERSION']}-{PINNED['FRONTEND_COMMIT'][:12]}-"
+    f"python-{PINNED['PYTHON_VERSION']}-cu{PINNED['CUDA_VERSION'].replace('.', '')}"
+)
+
+
 def make_environment(root: Path) -> Path:
     comfyui = root / "ComfyUI"
     (comfyui / "frontend").mkdir(parents=True)
     (comfyui / "runtime/python/bin").mkdir(parents=True)
     (comfyui / "main.py").write_text("# test Core\n", encoding="utf-8")
+    (comfyui / "LICENSE").write_text("Core license\n", encoding="utf-8")
     (comfyui / "frontend/index.html").write_text("<!doctype html>\n", encoding="utf-8")
+    (comfyui / "frontend/LICENSE").write_text("Frontend license\n", encoding="utf-8")
+    (comfyui / "frontend/THIRD_PARTY_NOTICES.md").write_text(
+        "Frontend notices\n", encoding="utf-8"
+    )
     (comfyui / "runtime/requirements.lock").write_bytes(CONSTRAINTS.read_bytes())
     for name in ("python-portable", "repair-portable-entrypoints"):
         path = comfyui / "runtime/python/bin" / name
@@ -35,27 +82,27 @@ def generate(root: Path) -> subprocess.CompletedProcess[str]:
             str(REPO / "scripts/generate_environment_manifest.py"),
             str(root),
             "--generation-id",
-            "test-environment-1",
+            PINNED_GENERATION,
             "--core-version",
-            "0.27.0",
+            PINNED["COMFY_VERSION"],
             "--core-tag",
-            "v0.27.0",
+            PINNED["COMFY_TAG"],
             "--core-commit",
-            "a" * 40,
+            PINNED["COMFY_COMMIT"],
             "--frontend-version",
-            "1.45.20",
+            PINNED["FRONTEND_VERSION"],
             "--frontend-commit",
-            "b" * 40,
+            PINNED["FRONTEND_COMMIT"],
             "--python",
-            "3.13.12",
+            PINNED["PYTHON_VERSION"],
             "--torch",
-            "2.12.0+cu130",
+            PINNED["TORCH_VERSION"],
             "--torchvision",
-            "0.27.0+cu130",
+            PINNED["TORCHVISION_VERSION"],
             "--torchaudio",
-            "2.11.0+cu130",
+            PINNED["TORCHAUDIO_VERSION"],
             "--cuda",
-            "13.0",
+            PINNED["CUDA_VERSION"],
             "--requirements-lock-sha256",
             LOCK_SHA256,
         ],
@@ -93,8 +140,19 @@ def test_manifest_covers_core_runtime_and_relative_links(tmp_path: Path) -> None
     assert manifest["runtime"]["requirements_lock_path"] == (
         "ComfyUI/runtime/requirements.lock"
     )
+    identity_path = root / "ComfyUI/PORTABLE-COMFY-IDENTITY.json"
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    assert identity == {
+        "schema_version": 1,
+        "app_id": manifest["app_id"],
+        "generation_id": manifest["generation_id"],
+        "core": manifest["core"],
+        "frontend": manifest["frontend"],
+        "runtime": manifest["runtime"],
+    }
     entries = {item["path"]: item for item in manifest["files"]}
     assert entries["ComfyUI/main.py"]["type"] == "file"
+    assert entries["ComfyUI/PORTABLE-COMFY-IDENTITY.json"]["type"] == "file"
     assert entries["ComfyUI/runtime/python/bin/python-portable"]["type"] == "file"
     assert entries["ComfyUI/main-link.py"] == {
         "path": "ComfyUI/main-link.py",
@@ -134,6 +192,11 @@ def test_generator_rejects_escaping_link(tmp_path: Path) -> None:
 def test_structural_builder_archives_only_atomic_environment(tmp_path: Path) -> None:
     source = tmp_path / "source/Portable-Comfy"
     make_environment(source)
+    generated = generate(source)
+    assert generated.returncode == 0, generated.stderr
+    source_identity = (source / "ComfyUI/PORTABLE-COMFY-IDENTITY.json").read_bytes()
+    source_manifest_bytes = (source / "manifest/environment.json").read_bytes()
+    source_checksums = (source / "manifest/environment-checksums.sha256").read_bytes()
     for persistent in ("models", "custom_nodes", "workflows", "user", "output"):
         directory = source / persistent
         directory.mkdir(parents=True)
@@ -156,13 +219,13 @@ def test_structural_builder_archives_only_atomic_environment(tmp_path: Path) -> 
         capture_output=True,
     )
     assert built.returncode == 0, built.stderr
-    archive = output / "Portable-Comfy-environment-v0.27.0.tar.gz"
+    archive = output / "Portable-Comfy-core-v0.27.0.tar.gz"
     assert archive.is_file()
     with tarfile.open(archive, "r:gz") as stream:
         names = stream.getnames()
         assert names[0] in {
-            "Portable-Comfy-environment-v0.27.0",
-            "Portable-Comfy-environment-v0.27.0/",
+            "Portable-Comfy-core-v0.27.0",
+            "Portable-Comfy-core-v0.27.0/",
         }
         assert any(
             name.endswith("/ComfyUI/runtime/requirements.lock") for name in names
@@ -175,7 +238,14 @@ def test_structural_builder_archives_only_atomic_environment(tmp_path: Path) -> 
         )
         extracted = tmp_path / "extracted"
         stream.extractall(extracted, filter="data")
-    root = extracted / "Portable-Comfy-environment-v0.27.0"
+    root = extracted / "Portable-Comfy-core-v0.27.0"
     checked = verify(root, "--structural")
     assert checked.returncode == 0, checked.stderr
     assert set(path.name for path in root.iterdir()) == {"ComfyUI", "manifest"}
+    assert (root / "ComfyUI/PORTABLE-COMFY-IDENTITY.json").read_bytes() == (
+        source_identity
+    )
+    assert (root / "manifest/environment.json").read_bytes() == source_manifest_bytes
+    assert (
+        root / "manifest/environment-checksums.sha256"
+    ).read_bytes() == source_checksums

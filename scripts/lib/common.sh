@@ -41,8 +41,8 @@ environment_generation_id() {
     "$PYTHON_VERSION" "$cuda_slug"
 }
 
-environment_bundle_basename() {
-  printf 'Portable-Comfy-environment-v%s\n' "$COMFY_VERSION"
+core_bundle_basename() {
+  printf 'Portable-Comfy-core-v%s\n' "$COMFY_VERSION"
 }
 
 absolute_path() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a real environment update against an extracted first-install tree."""
+"""Exercise a real full-Core update against an extracted first-install tree."""
 
 from __future__ import annotations
 
@@ -43,9 +43,7 @@ def write_sentinels(root: Path) -> dict[Path, bytes]:
 def assert_sentinels(expected: dict[Path, bytes]) -> None:
     for path, content in expected.items():
         if not path.is_file() or path.read_bytes() != content:
-            raise RuntimeError(
-                f"environment update changed persistent sentinel: {path}"
-            )
+            raise RuntimeError(f"full-Core update changed persistent sentinel: {path}")
 
 
 def active_runtime(paths: PortablePaths, runtime: dict[str, str]) -> None:
@@ -85,7 +83,11 @@ def active_runtime(paths: PortablePaths, runtime: dict[str, str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("portable_root", type=Path)
-    parser.add_argument("environment_archive", type=Path)
+    parser.add_argument(
+        "core_archive",
+        type=Path,
+        help="full ComfyUI Core/frontend/Python/Torch/CUDA bundle",
+    )
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
 
@@ -124,9 +126,7 @@ def main() -> None:
         disable_custom_nodes=True,
     )
     try:
-        result = EnvironmentUpdater(paths, supervisor).install_bundle(
-            args.environment_archive
-        )
+        result = EnvironmentUpdater(paths, supervisor).install_bundle(args.core_archive)
     finally:
         supervisor.stop(interrupt_timeout=5, terminate_timeout=3, kill_timeout=2)
 
@@ -138,9 +138,7 @@ def main() -> None:
         raise RuntimeError("transactional update left its health-check server running")
     assert_sentinels(sentinels)
     if paths.manager_config.read_bytes() != manager_config:
-        raise RuntimeError(
-            "environment update changed persistent Manager configuration"
-        )
+        raise RuntimeError("full-Core update changed persistent Manager configuration")
     if old_generation_marker.exists():
         raise RuntimeError("old ComfyUI generation was not replaced")
     rollbacks = sorted((paths.state / "rollback").glob("ComfyUI-*"))

@@ -35,15 +35,20 @@ The top-level `ComfyUI/` directory is one self-contained generation:
 ```text
 ComfyUI/
 ├── main.py and pinned Core source
-├── frontend/                     # matching compiled frontend
+├── PORTABLE-COMFY-IDENTITY.json  # visible exact version identity
+├── LICENSE                       # pinned Core license
+├── frontend/                     # matching compiled frontend + notices
 └── runtime/
     ├── python/                   # source-built CPython + locked packages
+    │   └── LICENSE.txt           # upstream PSF license beside CPython
     ├── requirements.lock         # exact committed constraints
     ├── installed-requirements.txt
-    └── LICENSES/
+    └── LICENSES/python-packages/ # wheel notices + packages.json inventory
 ```
 
-An environment update swaps that complete directory. Core source and its
+The public **Core bundle** swaps that complete directory. In this project,
+"Core bundle" explicitly includes the matching frontend, private interpreter,
+Torch/CUDA and locked dependencies; it is not source-only. Core source and its
 interpreter can never be combined accidentally with a different generation's
 Torch or dependency set.
 
@@ -77,13 +82,13 @@ The portable root's `workflows/` directory contains the real files.
 to it. The launcher repairs that link only when it is absent or already targets
 the expected directory; it must not overwrite unrelated user content.
 
-## Environment bundle contract
+## Full Core bundle contract
 
 An update archive has one outer directory named
-`Portable-Comfy-environment-v<version>/`. It may contain only:
+`Portable-Comfy-core-v<version>/`. It may contain only:
 
 ```text
-Portable-Comfy-environment-v<version>/
+Portable-Comfy-core-v<version>/
 ├── ComfyUI/                       # complete candidate generation
 └── manifest/
     ├── environment.json
@@ -96,6 +101,11 @@ platform values, plus the SHA-256-bound requirements lock. Its `files` list
 covers every regular file and safe relative symlink beneath `ComfyUI/`.
 Regular entries record size and SHA-256; symlink entries record the exact
 relative target. The checksum list covers every regular payload file.
+`ComfyUI/PORTABLE-COMFY-IDENTITY.json` repeats the generation ID and exact
+Core, frontend and runtime identity in a visible place inside the replaceable
+folder. The verifier requires those objects to equal the top manifest exactly,
+so the complete archive and Core archive cannot silently describe the same
+bytes as different generations.
 
 The verifier rejects absolute/traversal paths, escaping or dangling links,
 special files, unexpected top-level payload, missing/unlisted entries and any
@@ -122,8 +132,17 @@ rollback environment and manifest files, while moving an uncommitted candidate
 to `state/recovered/` instead of deleting it.
 
 The AppImage is outside this transaction. A launcher/UI update still requires
-a new complete first-install package; an environment update may change Core,
-frontend, Python, Torch/CUDA and locked Core requirements together.
+a new complete first-install package; a full-Core update may change Core,
+frontend, Python, Torch/CUDA and locked Core requirements together. The
+manifest retains `bundle_type: environment` as the stable schema-v2 identity;
+that internal field does not make the public Core artifact source-only.
+
+The first-install archive's top-level `LICENSES/` directory indexes the
+notices inside the environment and frozen launcher. Launcher package notices
+cover PyWebView, PyInstaller, PyQt/Qt WebEngine and Chromium. Native Wayland,
+PulseAudio, XCB and XKB libraries copied from the Ubuntu build host are bound
+to their Debian package/version and copyright file in a TSV inventory. The
+embedded AppImage type-2 runtime carries its pinned MIT notice.
 
 ## Python and CUDA portability
 

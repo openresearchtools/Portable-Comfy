@@ -20,7 +20,7 @@ Portable-Comfy/
 │   ├── frontend/                  # matching compiled web frontend
 │   └── runtime/
 │       └── python/                # CPython, locked Core deps and Torch/CUDA
-├── custom_nodes/                  # retained across environment updates
+├── custom_nodes/                  # retained across full-Core updates
 ├── custom_node_runtime/           # persistent shared custom-node venv
 │   ├── bin/
 │   ├── lib/python3.13/site-packages/
@@ -64,29 +64,32 @@ The native application menu provides:
 
 - **Server → Start, Stop, Restart** for explicit lifecycle control.
 - **View → Reload** to reload the web interface without replacing the environment.
-- **Environment → Install bundle…** for a local, validated environment update.
-- **Help → About** for build and runtime information.
+- **Core → Install complete bundle…** for a local, validated full-Core update.
+- **Help → About** for the installed generation, exact Core/frontend
+  commits, and Python/Torch/CUDA versions.
 
 Server output is written beneath `logs/`. The launcher binds to loopback by
 default; do not expose a ComfyUI instance containing untrusted custom nodes to
 an untrusted network.
 
-## Environment updates and persistent data
+## Full Core bundles and persistent data
 
-An environment archive replaces the complete `ComfyUI/` generation: pinned
-Core source, its matching frontend, source-built Python, all locked Core
-requirements and Torch/CUDA. The installer stops the server, validates every
+A `Portable-Comfy-core-v<version>.tar.gz` archive replaces the complete
+`ComfyUI/` generation. Here **Core bundle means the whole replaceable folder**:
+pinned ComfyUI Core source, its matching compiled frontend, source-built
+Python, all locked Core requirements, Torch and CUDA user-space libraries. It
+is not a source-only patch. The installer stops the server, validates every
 file and safe relative link, stages the new tree, checks it with the candidate's
 own interpreter, preserves the previous generation for rollback, starts the
 candidate, and commits only after a successful health check. A failed start
-restores the previous environment automatically. The launcher keeps the two
+restores the previous generation automatically. The launcher keeps the two
 newest successful rollback generations under `state/rollback/`.
 Before either rename it fsyncs an update journal. If power loss or termination
 interrupts activation, the next single-instance startup restores the rollback
 environment/manifest and preserves an uncommitted candidate under
 `state/recovered/` for diagnosis.
 
-The following are never part of an environment update and remain untouched:
+The following are never part of a full-Core update and remain untouched:
 
 - `custom_nodes/` and their repositories;
 - `models/`, `workflows/`, input, output and user data;
@@ -98,9 +101,13 @@ as part of one tested environment generation. See
 [Architecture](docs/architecture.md) for the update boundary and manifest
 rules.
 
+The same exact version identity is visible at
+`ComfyUI/PORTABLE-COMFY-IDENTITY.json`, bound into the checksum manifest, and
+shown in **Help → About**.
+
 If `custom_node_runtime/` already contains packages, the installer compares
 the candidate's Python, Torch-family, CUDA and platform ABI fields with the
-active manifest. It accepts compatible environment updates, but refuses an ABI
+active manifest. It accepts compatible full-Core updates, but refuses an ABI
 change until that persistent venv is moved aside or rebuilt for the new
 generation.
 
@@ -125,7 +132,7 @@ node-installed packages and their normal pip metadata outside replaceable
 `python -m pip` install, upgrade and uninstall operations target this venv. A
 node may still conflict with another node's packages or with a new environment
 baseline, so back up the portable directory before installing unknown nodes.
-Environment updates never delete the venv.
+Full-Core updates never delete the venv.
 
 When the portable root moves, the launcher detects the new Python prefix and
 rebinds the venv to the active `ComfyUI/runtime/python`, repairs pip-generated

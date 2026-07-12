@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 HEX = re.compile(r"^[0-9a-f]{64}$")
 GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
 STRICT_TOP_LEVEL = {"ComfyUI", "manifest", "LICENSES"}
+IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 
 
 def sha256(path: Path) -> str:
@@ -26,7 +27,7 @@ def sha256(path: Path) -> str:
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"invalid environment bundle: {message}")
+    raise SystemExit(f"invalid complete Core bundle: {message}")
 
 
 def safe_payload_path(path_text: object) -> PurePosixPath:
@@ -265,6 +266,26 @@ def main() -> None:
     }
     if checksum_entries != wanted_checksums:
         fail("environment checksum list disagrees with manifest")
+
+    identity_path = comfyui / IDENTITY_NAME
+    identity_entry = expected.get(f"ComfyUI/{IDENTITY_NAME}")
+    if identity_entry is None or identity_entry["type"] != "file":
+        fail(f"{IDENTITY_NAME} is absent from the payload manifest")
+    try:
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        fail(f"invalid {IDENTITY_NAME}: {error}")
+    wanted_identity = {
+        "schema_version": 1,
+        "app_id": manifest["app_id"],
+        "generation_id": manifest["generation_id"],
+        "core": core,
+        "frontend": frontend,
+        "runtime": runtime,
+    }
+    if identity != wanted_identity:
+        fail(f"{IDENTITY_NAME} disagrees with the environment manifest")
+
     requirements_relative = requirements_path.as_posix()
     requirements_entry = expected.get(requirements_relative)
     if (

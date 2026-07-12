@@ -141,7 +141,7 @@ class DesktopController:
             directory=str(self.paths.root),
             allow_multiple=False,
             file_types=(
-                "Portable Comfy Environment (*.tar.gz;*.tgz)",
+                "Portable Comfy Core bundle (*.tar.gz;*.tgz)",
                 "All files (*.*)",
             ),
         )
@@ -149,8 +149,10 @@ class DesktopController:
             return
         archive = Path(selected[0])
         if not self.window.create_confirmation_dialog(
-            "Install environment bundle",
+            "Install complete Core bundle",
             f"Validate and install {archive.name}?\n\n"
+            "This replaces the complete ComfyUI folder, including its Core, "
+            "frontend, private Python, Torch/CUDA and locked dependencies.\n\n"
             "Models, custom nodes, workflows, user data and their Python packages "
             "will not be replaced.",
         ):
@@ -165,20 +167,84 @@ class DesktopController:
             else:
                 self.window.load_html(
                     _page(
-                        "Environment update installed",
+                        "Complete Core bundle installed",
                         f"ComfyUI {result.version} is installed. Use Server → Start when ready.",
                     )
                 )
 
-        self._background("Installing environment update", operation)
+        self._background("Installing complete Core bundle", operation)
 
     def about(self) -> None:
+        identity = self._installed_identity_summary()
         self.window.create_confirmation_dialog(
             "About Portable Comfy",
             f"Portable Comfy {__version__}\n\n"
+            f"{identity}\n\n"
             "The complete ComfyUI/Python/CUDA environment is replaceable. Custom "
             "nodes, node packages, models, workflows and user data stay persistent.",
         )
+
+    def _installed_identity_summary(self) -> str:
+        path = self.paths.comfyui / "PORTABLE-COMFY-IDENTITY.json"
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 131072:
+                raise ValueError("identity file is missing, linked, or too large")
+            identity = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(identity, dict)
+                or identity.get("schema_version") != 1
+                or identity.get("app_id") != "portable-comfy"
+            ):
+                raise ValueError("identity schema is invalid")
+
+            core = identity["core"]
+            frontend = identity["frontend"]
+            runtime = identity["runtime"]
+            if not all(isinstance(group, dict) for group in (core, frontend, runtime)):
+                raise ValueError("identity groups are invalid")
+
+            def value(group: dict[str, object], key: str) -> str:
+                result = group.get(key)
+                if (
+                    not isinstance(result, str)
+                    or not result
+                    or len(result) > 200
+                    or any(character in result for character in "\r\n\x00")
+                ):
+                    raise ValueError(f"invalid identity value: {key}")
+                return result
+
+            generation = identity.get("generation_id")
+            if (
+                not isinstance(generation, str)
+                or not generation
+                or len(generation) > 200
+                or any(character in generation for character in "\r\n\x00")
+            ):
+                raise ValueError("invalid generation ID")
+            return "\n".join(
+                (
+                    f"Installed generation: {generation}",
+                    f"Core: {value(core, 'version')} ({value(core, 'tag')})",
+                    f"Core commit: {value(core, 'commit')}",
+                    f"Frontend: {value(frontend, 'version')}",
+                    f"Frontend commit: {value(frontend, 'commit')}",
+                    f"Python: {value(runtime, 'python')}",
+                    f"Torch: {value(runtime, 'torch')}",
+                    f"torchvision: {value(runtime, 'torchvision')}",
+                    f"torchaudio: {value(runtime, 'torchaudio')}",
+                    f"CUDA: {value(runtime, 'cuda')}",
+                )
+            )
+        except (
+            KeyError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            LOGGER.warning("installed Core identity is unavailable: %s", error)
+            return "Installed Core identity: unavailable"
 
     def closing(self) -> bool:
         self._closing.set()
@@ -300,8 +366,8 @@ def _menu(controller: DesktopController) -> list[Any]:
         ),
         Menu("View", [MenuAction("Reload", controller.reload)]),
         Menu(
-            "Environment",
-            [MenuAction("Install bundle…", controller.install_bundle)],
+            "Core",
+            [MenuAction("Install complete bundle…", controller.install_bundle)],
         ),
         Menu("Help", [MenuAction("About Portable Comfy", controller.about)]),
     ]

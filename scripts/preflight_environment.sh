@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify an atomic ComfyUI + Python/Torch environment directory or archive.
+# Verify a full Core bundle: ComfyUI source/frontend/Python/Torch/CUDA.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -18,7 +18,7 @@ while (($#)); do
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$target" ]] || die "usage: $0 ENVIRONMENT_ROOT_OR_TARBALL [--structural]"
+[[ -n "$target" ]] || die "usage: $0 CORE_BUNDLE_ROOT_OR_TARBALL [--structural]"
 target="$(absolute_path "$target")"
 temporary=""
 extension_temp=""
@@ -30,12 +30,12 @@ trap cleanup EXIT
 
 if [[ -f "$target" ]]; then
   assert_safe_archive_paths "$target"
-  temporary="$(mktemp -d "${TMPDIR:-/tmp}/Portable Comfy environment.XXXXXX")"
+  temporary="$(mktemp -d "${TMPDIR:-/tmp}/Portable Comfy core.XXXXXX")"
   tar -xzf "$target" -C "$temporary" --no-same-owner --no-same-permissions
   mapfile -t top_level < <(find "$temporary" -mindepth 1 -maxdepth 1 -print)
-  ((${#top_level[@]} == 1)) || die "environment archive must contain one outer directory"
+  ((${#top_level[@]} == 1)) || die "Core bundle must contain one outer directory"
   [[ -d "${top_level[0]}" && ! -L "${top_level[0]}" ]] \
-    || die "environment archive outer entry must be a directory"
+    || die "Core bundle outer entry must be a directory"
   root="${top_level[0]}"
 elif [[ -d "$target" ]]; then
   root="$target"
@@ -131,4 +131,4 @@ PY
   PYTHONPATH="$extension_temp" "$python" -c \
     'import portable_environment_test as value; assert value.answer() == 42'
 fi
-log "environment preflight passed: $root"
+log "complete Core bundle preflight passed: $root"

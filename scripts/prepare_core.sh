@@ -12,7 +12,7 @@ cache_dir="${CACHE_DIR:-$REPO_ROOT/.cache/portable-comfy}"
 [[ -n "$destination" ]] || die "usage: $0 DESTINATION"
 destination="$(absolute_path "$destination")"
 
-require_command curl sha256sum tar unzip
+require_command curl python3 sha256sum tar unzip
 mkdir -p -- "$cache_dir"
 source_archive="$cache_dir/ComfyUI-${COMFY_COMMIT}.tar.gz"
 frontend_wheel="$cache_dir/comfyui_frontend_package-${FRONTEND_VERSION}-py3-none-any.whl"
@@ -30,6 +30,8 @@ trap 'rm -rf -- "$temporary"' EXIT
 tar -xzf "$source_archive" -C "$temporary" --no-same-owner --no-same-permissions
 extracted="$(find "$temporary" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [[ -n "$extracted" && -f "$extracted/main.py" ]] || die "ComfyUI archive has unexpected layout"
+python3 "$SCRIPT_DIR/verify_core_identity.py" \
+  "$extracted" "$COMFY_VERSION" "$FRONTEND_VERSION"
 cp -a -- "$extracted/." "$destination/"
 rm -rf -- "$destination/.github" "$destination/.git"
 
@@ -37,16 +39,6 @@ mkdir -p -- "$destination/frontend"
 unzip -q "$frontend_wheel" 'comfyui_frontend_package/static/*' -d "$temporary/frontend-wheel"
 cp -a -- "$temporary/frontend-wheel/comfyui_frontend_package/static/." "$destination/frontend/"
 [[ -s "$destination/frontend/index.html" ]] || die "frontend wheel has unexpected layout"
-
-cat >"$destination/.portable-comfy.json" <<EOF
-{
-  "schema_version": 1,
-  "core": {"version": "$COMFY_VERSION", "tag": "$COMFY_TAG", "commit": "$COMFY_COMMIT"},
-  "frontend": {"version": "$FRONTEND_VERSION", "commit": "$FRONTEND_COMMIT"},
-  "runtime": {"python": "$PYTHON_VERSION", "torch": "$TORCH_VERSION", "cuda": "$CUDA_VERSION", "platform": "linux-x86_64", "requirements_lock_sha256": "$RUNTIME_LOCK_SHA256"}
-}
-EOF
-
 # The frontend wheel contains only compiled static assets and no dist-info
 # license metadata. Bind the notices from the exact pinned source commit into
 # the same replaceable ComfyUI generation as those assets.
