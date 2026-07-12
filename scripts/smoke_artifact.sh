@@ -185,8 +185,6 @@ if [[ "$desktop_backend" == wayland ]]; then
     -u XDG_CURRENT_DESKTOP
     -u DESKTOP_SESSION
     -u GNOME_DESKTOP_SESSION_ID
-    QT_QPA_PLATFORM=wayland
-    QT_STYLE_OVERRIDE=Fusion
   )
 fi
 log "starting the actual AppImage desktop smoke on $desktop_backend with loopback DevTools"
@@ -249,6 +247,15 @@ PY
   fi
   sleep 0.1
 done
+
+if [[ "$desktop_backend" == wayland ]]; then
+  process_environment="$(tr '\0' '\n' <"/proc/$desktop_pid/environ")"
+  grep -Fqx 'QT_QPA_PLATFORM=wayland' <<<"$process_environment" \
+    || die "AppImage did not select its native Wayland fallback"
+  if grep -q '^DISPLAY=' <<<"$process_environment"; then
+    die "native Wayland smoke unexpectedly retained an X11 display"
+  fi
+fi
 
 if ! python3 "$SCRIPT_DIR/verify_webengine_surface.py" \
   "http://127.0.0.1:$debug_port" "$surface_png" --timeout 20; then
