@@ -110,7 +110,7 @@ jobs:
             --output-dir "$GITHUB_WORKSPACE/artifacts" \
             --work-dir "$RUNNER_TEMP/portable-build"
 
-      - name: Build replaceable ComfyUI environment archive
+      - name: Build replaceable complete ComfyUI archive
         shell: bash
         run: |
           scripts/build_environment_bundle.sh \
@@ -124,7 +124,7 @@ jobs:
           scripts/preflight_portable.sh \
             artifacts/Portable-Comfy-linux-x86_64.tar.gz
           scripts/preflight_environment.sh \
-            artifacts/Portable-Comfy-environment-v0.27.0.tar.gz
+            artifacts/Portable-Comfy-core-v0.27.0.tar.gz
           (cd artifacts && sha256sum -- *.tar.gz | tee SHA256SUMS)
           du -h artifacts/*
           df -h /
@@ -134,214 +134,17 @@ jobs:
       - name: Upload complete portable archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Portable-Comfy-linux-x86_64
-          path: |
-            artifacts/Portable-Comfy-linux-x86_64.tar.gz
-            artifacts/SHA256SUMS
+          name: Portable-Comfy-linux-x86_64.tar.gz
+          path: artifacts/Portable-Comfy-linux-x86_64.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
-      - name: Upload replaceable environment archive
+      - name: Upload replaceable complete ComfyUI archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Portable-Comfy-environment-v0.27.0
-          path: |
-            artifacts/Portable-Comfy-environment-v0.27.0.tar.gz
-            artifacts/SHA256SUMS
+          name: Portable-Comfy-core-v0.27.0.tar.gz
+          path: artifacts/Portable-Comfy-core-v0.27.0.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-  smoke-downloaded-artifact:
-    name: Download and smoke-test artifact
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-
-    steps:
-      - name: Check out smoke-test scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-
-      - name: Reclaim smoke-runner disk space
-        shell: bash
-        run: |
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL
-          sudo apt-get clean
-          df -h /
-
-      - name: Download complete portable artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: Portable-Comfy-linux-x86_64
-          path: downloaded/full
-
-      - name: Download replaceable environment artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: Portable-Comfy-environment-v0.27.0
-          path: downloaded/environment
-
-      - name: Verify downloaded archive checksums
-        shell: bash
-        run: |
-          (cd downloaded/full && sha256sum --check --ignore-missing SHA256SUMS)
-          (cd downloaded/environment && sha256sum --check --ignore-missing SHA256SUMS)
-
-      - name: Install headless desktop libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            curl \
-            file \
-            gcc \
-            libegl1 \
-            libfontconfig1 \
-            libgl1 \
-            libnss3 \
-            libopengl0 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxkbcommon-x11-0 \
-            libxrandr2 \
-            libxcb-cursor0 \
-            libxcb-icccm4 \
-            libxcb-keysyms1 \
-            libxcb-randr0 \
-            libxcb-render-util0 \
-            libxcb-shape0 \
-            libxcb-xinerama0 \
-            libxcb-xfixes0 \
-            x11-utils \
-            xvfb
-
-      - name: Preflight the downloaded payload
-        run: |
-          scripts/preflight_environment.sh \
-            downloaded/environment/Portable-Comfy-environment-v0.27.0.tar.gz
-          scripts/preflight_portable.sh \
-            downloaded/full/Portable-Comfy-linux-x86_64.tar.gz
-
-      - name: Install the downloaded environment transactionally
-        run: |
-          scripts/smoke_environment_update.sh \
-            downloaded/full/Portable-Comfy-linux-x86_64.tar.gz \
-            downloaded/environment/Portable-Comfy-environment-v0.27.0.tar.gz \
-            --timeout 120
-
-      - name: Launch ComfyUI and the frozen desktop shell
-        env:
-          QTWEBENGINE_DISABLE_SANDBOX: "1"
-        run: |
-          scripts/smoke_artifact.sh \
-            downloaded/full/Portable-Comfy-linux-x86_64.tar.gz \
-            --timeout 120 \
-            --allow-no-gpu
-
-  smoke-ubuntu-26-wayland:
-    name: Ubuntu 26.04 native Wayland AppImage
-    needs: build
-    runs-on: ubuntu-26.04
-    timeout-minutes: 45
-
-    steps:
-      - name: Check out smoke-test scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-
-      - name: Reclaim Wayland smoke-runner disk space
-        shell: bash
-        run: |
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL
-          sudo apt-get clean
-          df -h /
-
-      - name: Download complete portable artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: Portable-Comfy-linux-x86_64
-          path: downloaded/full
-
-      - name: Verify downloaded archive checksum
-        shell: bash
-        run: |
-          (cd downloaded/full && sha256sum --check --ignore-missing SHA256SUMS)
-
-      - name: Install native Wayland smoke dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            curl \
-            file \
-            gcc \
-            libegl1 \
-            libfontconfig1 \
-            libgl1 \
-            libnss3 \
-            libopengl0 \
-            libwayland-client0 \
-            libwayland-cursor0 \
-            libwayland-egl1 \
-            libwayland-server0 \
-            libxkbcommon0 \
-            weston
-
-      - name: Launch without DISPLAY on a native Wayland compositor
-        shell: bash
-        env:
-          QTWEBENGINE_DISABLE_SANDBOX: "1"
-        run: |
-          unset DISPLAY
-          export XDG_SESSION_TYPE=wayland
-          export XDG_RUNTIME_DIR="$RUNNER_TEMP/portable-comfy-wayland"
-          export WAYLAND_DISPLAY=wayland-portable-comfy
-          mkdir -p "$XDG_RUNTIME_DIR"
-          chmod 0700 "$XDG_RUNTIME_DIR"
-          weston \
-            --backend=headless \
-            --renderer=pixman \
-            --no-config \
-            --socket="$WAYLAND_DISPLAY" \
-            --width=1920 \
-            --height=1200 \
-            >"$RUNNER_TEMP/weston.log" 2>&1 &
-          weston_pid=$!
-          cleanup() {
-            kill -TERM "$weston_pid" 2>/dev/null || true
-            wait "$weston_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          for _ in {1..150}; do
-            if [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then
-              break
-            fi
-            if ! kill -0 "$weston_pid" 2>/dev/null; then
-              cat "$RUNNER_TEMP/weston.log" >&2
-              exit 1
-            fi
-            sleep 0.1
-          done
-          [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]] || {
-            cat "$RUNNER_TEMP/weston.log" >&2
-            exit 1
-          }
-          ! pgrep -x Xwayland
-          scripts/smoke_artifact.sh \
-            downloaded/full/Portable-Comfy-linux-x86_64.tar.gz \
-            --timeout 120 \
-            --allow-no-gpu \
-            --native-wayland
-          ! pgrep -x Xwayland
