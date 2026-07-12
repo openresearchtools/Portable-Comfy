@@ -13,9 +13,34 @@ from pathlib import Path, PurePosixPath
 
 
 HEX = re.compile(r"^[0-9a-f]{64}$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+VERSION = re.compile(
+    r"^[0-9]+(?:\.[0-9]+){2}(?:[-+._]?[0-9A-Za-z][0-9A-Za-z._+-]{0,63})?$"
+)
 GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
 STRICT_TOP_LEVEL = {"ComfyUI", "manifest", "LICENSES"}
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
+RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
+CORE_LICENSE_FILES = (
+    "ComfyUI/LICENSE",
+    "ComfyUI/frontend/LICENSE",
+    "ComfyUI/frontend/THIRD_PARTY_NOTICES.md",
+)
+RUNTIME_LICENSE_FILES = (
+    "ComfyUI/runtime/python/LICENSE.txt",
+    RUNTIME_LICENSE_INVENTORY,
+)
+REQUIRED_RUNTIME_LICENSE_PACKAGES = frozenset(
+    {
+        "comfyui-frontend-package",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "nvidia-cublas",
+        "nvidia-cuda-runtime",
+        "nvidia-cudnn-cu13",
+    }
+)
 
 
 def sha256(path: Path) -> str:
@@ -74,6 +99,88 @@ def load_manifest(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         fail("environment manifest is not an object")
     return value
+
+
+def require_license_files(
+    root: Path,
+    expected: dict[str, dict[str, object]],
+    *,
+    runtime: bool,
+) -> None:
+    required = CORE_LICENSE_FILES + (RUNTIME_LICENSE_FILES if runtime else ())
+    for path_text in required:
+        entry = expected.get(path_text)
+        if (
+            entry is None
+            or entry.get("type") != "file"
+            or not isinstance(entry.get("size"), int)
+            or entry["size"] <= 0
+        ):
+            fail(f"required redistribution notice is missing or empty: {path_text}")
+    if not runtime:
+        return
+
+    inventory_path = root / RUNTIME_LICENSE_INVENTORY
+    try:
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        fail(f"invalid runtime package license inventory: {error}")
+    if (
+        not isinstance(inventory, dict)
+        or inventory.get("schema_version") != 2
+        or not isinstance(inventory.get("packages"), list)
+        or not inventory["packages"]
+    ):
+        fail("runtime package license inventory has an unsupported schema")
+    package_count = len(inventory["packages"])
+    if inventory.get("summary") != {
+        "distributions": package_count,
+        "with_license_files": package_count,
+        "metadata_only": 0,
+        "unidentified": 0,
+    }:
+        fail("runtime package license inventory is not comprehensive")
+
+    licensed: set[str] = set()
+    inventory_parent = PurePosixPath(RUNTIME_LICENSE_INVENTORY).parent
+    for package in inventory["packages"]:
+        if not isinstance(package, dict):
+            fail("runtime package license inventory contains a malformed package")
+        name = package.get("name")
+        files = package.get("license_files")
+        if not isinstance(name, str) or not isinstance(files, list):
+            fail("runtime package license inventory contains malformed fields")
+        normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+        if not files:
+            fail(f"runtime package has no bundled license file: {normalized_name}")
+        licensed.add(normalized_name)
+        for relative_text in files:
+            if not isinstance(relative_text, str):
+                fail("runtime package license inventory has a malformed path")
+            relative = PurePosixPath(relative_text)
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or ".." in relative.parts
+                or "\\" in relative_text
+                or "\x00" in relative_text
+                or relative.as_posix() != relative_text
+            ):
+                fail("runtime package license inventory has an unsafe path")
+            payload_path = (inventory_parent / relative).as_posix()
+            entry = expected.get(payload_path)
+            if (
+                entry is None
+                or entry.get("type") != "file"
+                or not isinstance(entry.get("size"), int)
+                or entry["size"] <= 0
+            ):
+                fail(
+                    f"runtime package license file is missing or empty: {payload_path}"
+                )
+    missing = sorted(REQUIRED_RUNTIME_LICENSE_PACKAGES - licensed)
+    if missing:
+        fail("runtime package has no bundled license file: " + missing[0])
 
 
 def main() -> None:
@@ -150,6 +257,32 @@ def main() -> None:
         and isinstance(frontend, dict)
         and isinstance(runtime, dict)
     )
+    if set(core) != {"version", "tag", "commit"}:
+        fail("Core identity fields are missing or unexpected")
+    if (
+        not isinstance(core.get("version"), str)
+        or not VERSION.fullmatch(core["version"])
+        or core.get("tag") != f"v{core['version']}"
+        or not isinstance(core.get("commit"), str)
+        or not COMMIT.fullmatch(core["commit"])
+    ):
+        fail("Core version, tag, or commit is malformed")
+    if set(frontend) != {"version", "commit"}:
+        fail("frontend identity fields are missing or unexpected")
+    if (
+        not isinstance(frontend.get("version"), str)
+        or not VERSION.fullmatch(frontend["version"])
+        or not isinstance(frontend.get("commit"), str)
+        or not COMMIT.fullmatch(frontend["commit"])
+    ):
+        fail("frontend version or commit is malformed")
+    if not args.portable_root:
+        expected_root = f"Portable-Comfy-core-v{core['version']}"
+        if root.name != expected_root:
+            fail(
+                "Core bundle root does not match manifest core.version: "
+                f"expected {expected_root}, found {root.name}"
+            )
     for group_name, group, fields in (
         ("core", core, ("version", "tag", "commit")),
         ("frontend", frontend, ("version", "commit")),
@@ -266,6 +399,8 @@ def main() -> None:
     }
     if checksum_entries != wanted_checksums:
         fail("environment checksum list disagrees with manifest")
+
+    require_license_files(root, expected, runtime=not args.structural)
 
     identity_path = comfyui / IDENTITY_NAME
     identity_entry = expected.get(f"ComfyUI/{IDENTITY_NAME}")

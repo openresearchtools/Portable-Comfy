@@ -25,6 +25,10 @@ from .supervisor import ServerSupervisor
 
 SCHEMA_VERSION = 2
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+VERSION = re.compile(
+    r"^[0-9]+(?:\.[0-9]+){2}(?:[-+._]?[0-9A-Za-z][0-9A-Za-z._+-]{0,63})?$"
+)
 GENERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
 # "Core bundle" is the public artifact name. It always means the complete,
 # self-contained ComfyUI/ generation: Core source, matching frontend, private
@@ -34,6 +38,25 @@ MAX_MEMBERS = 500_000
 MAX_UNPACKED_BYTES = 32 * 1024**3
 TRANSACTION_MARKER = "environment-update-transaction.json"
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
+RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
+REQUIRED_LICENSE_FILES = (
+    "ComfyUI/LICENSE",
+    "ComfyUI/frontend/LICENSE",
+    "ComfyUI/frontend/THIRD_PARTY_NOTICES.md",
+    "ComfyUI/runtime/python/LICENSE.txt",
+    RUNTIME_LICENSE_INVENTORY,
+)
+REQUIRED_RUNTIME_LICENSE_PACKAGES = frozenset(
+    {
+        "comfyui-frontend-package",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "nvidia-cublas",
+        "nvidia-cuda-runtime",
+        "nvidia-cudnn-cu13",
+    }
+)
 RUNTIME_FIELDS = (
     "python",
     "torch",
@@ -356,13 +379,21 @@ class EnvironmentUpdater:
             raise BundleValidationError(
                 f"invalid environment metadata: {error}"
             ) from error
-        self._validate_manifest(bundle_root, manifest, checksum_text)
+        self._validate_manifest(
+            bundle_root, manifest, checksum_text, archive_root=outer
+        )
         return ValidatedBundle(
             root=bundle_root, manifest=manifest, checksums=checksum_text
         )
 
     @staticmethod
-    def _validate_manifest(root: Path, manifest: Any, checksum_text: str) -> None:
+    def _validate_manifest(
+        root: Path,
+        manifest: Any,
+        checksum_text: str,
+        *,
+        archive_root: str,
+    ) -> None:
         if (
             not isinstance(manifest, dict)
             or manifest.get("schema_version") != SCHEMA_VERSION
@@ -385,6 +416,37 @@ class EnvironmentUpdater:
         for key in ("core", "frontend", "runtime"):
             if not isinstance(manifest.get(key), dict):
                 raise BundleValidationError(f"manifest is missing {key}")
+        core = manifest["core"]
+        frontend = manifest["frontend"]
+        if set(core) != {"version", "tag", "commit"}:
+            raise BundleValidationError(
+                "Core identity fields are missing or unexpected"
+            )
+        if (
+            not isinstance(core.get("version"), str)
+            or not VERSION.fullmatch(core["version"])
+            or core.get("tag") != f"v{core['version']}"
+            or not isinstance(core.get("commit"), str)
+            or not COMMIT.fullmatch(core["commit"])
+        ):
+            raise BundleValidationError("Core version, tag, or commit is malformed")
+        if set(frontend) != {"version", "commit"}:
+            raise BundleValidationError(
+                "frontend identity fields are missing or unexpected"
+            )
+        if (
+            not isinstance(frontend.get("version"), str)
+            or not VERSION.fullmatch(frontend["version"])
+            or not isinstance(frontend.get("commit"), str)
+            or not COMMIT.fullmatch(frontend["commit"])
+        ):
+            raise BundleValidationError("frontend version or commit is malformed")
+        expected_archive_root = f"Portable-Comfy-core-v{core['version']}"
+        if archive_root != expected_archive_root:
+            raise BundleValidationError(
+                "Core bundle root does not match manifest core.version: "
+                f"expected {expected_archive_root}, found {archive_root}"
+            )
         runtime = manifest["runtime"]
         for field in RUNTIME_FIELDS:
             if not isinstance(runtime.get(field), str) or not runtime[field]:
@@ -483,6 +545,14 @@ class EnvironmentUpdater:
                 "environment-checksums.sha256 disagrees with environment.json"
             )
 
+        for path_text in REQUIRED_LICENSE_FILES:
+            entry = regular.get(path_text)
+            if entry is None or entry[1] <= 0:
+                raise BundleValidationError(
+                    f"required redistribution notice is missing or empty: {path_text}"
+                )
+        EnvironmentUpdater._validate_runtime_license_inventory(root, regular)
+
         identity_path = root / "ComfyUI" / IDENTITY_NAME
         if f"ComfyUI/{IDENTITY_NAME}" not in regular:
             raise BundleValidationError(
@@ -527,6 +597,86 @@ class EnvironmentUpdater:
         ):
             raise BundleValidationError(
                 "runtime requirements lock does not match manifest"
+            )
+
+    @staticmethod
+    def _validate_runtime_license_inventory(
+        root: Path, regular: dict[str, tuple[str, int]]
+    ) -> None:
+        inventory_path = root / RUNTIME_LICENSE_INVENTORY
+        try:
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise BundleValidationError(
+                f"invalid runtime package license inventory: {error}"
+            ) from error
+        if (
+            not isinstance(inventory, dict)
+            or inventory.get("schema_version") != 2
+            or not isinstance(inventory.get("packages"), list)
+            or not inventory["packages"]
+        ):
+            raise BundleValidationError(
+                "runtime package license inventory has an unsupported schema"
+            )
+        package_count = len(inventory["packages"])
+        if inventory.get("summary") != {
+            "distributions": package_count,
+            "with_license_files": package_count,
+            "metadata_only": 0,
+            "unidentified": 0,
+        }:
+            raise BundleValidationError(
+                "runtime package license inventory is not comprehensive"
+            )
+
+        licensed: set[str] = set()
+        inventory_parent = PurePosixPath(RUNTIME_LICENSE_INVENTORY).parent
+        for package in inventory["packages"]:
+            if not isinstance(package, dict):
+                raise BundleValidationError(
+                    "runtime package license inventory contains a malformed package"
+                )
+            name = package.get("name")
+            files = package.get("license_files")
+            if not isinstance(name, str) or not isinstance(files, list):
+                raise BundleValidationError(
+                    "runtime package license inventory contains malformed fields"
+                )
+            normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+            if not files:
+                raise BundleValidationError(
+                    f"runtime package has no bundled license file: {normalized_name}"
+                )
+            licensed.add(normalized_name)
+            for relative_text in files:
+                if not isinstance(relative_text, str):
+                    raise BundleValidationError(
+                        "runtime package license inventory has a malformed path"
+                    )
+                relative = PurePosixPath(relative_text)
+                if (
+                    relative.is_absolute()
+                    or not relative.parts
+                    or ".." in relative.parts
+                    or "\\" in relative_text
+                    or "\x00" in relative_text
+                    or relative.as_posix() != relative_text
+                ):
+                    raise BundleValidationError(
+                        "runtime package license inventory has an unsafe path"
+                    )
+                payload_path = (inventory_parent / relative).as_posix()
+                entry = regular.get(payload_path)
+                if entry is None or entry[1] <= 0:
+                    raise BundleValidationError(
+                        "runtime package license file is missing or empty: "
+                        f"{payload_path}"
+                    )
+        missing = sorted(REQUIRED_RUNTIME_LICENSE_PACKAGES - licensed)
+        if missing:
+            raise BundleValidationError(
+                "runtime package has no bundled license file: " + missing[0]
             )
 
     def _preflight(self, bundle: ValidatedBundle) -> None:

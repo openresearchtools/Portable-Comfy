@@ -51,7 +51,8 @@ PINNED = pinned_versions()
 PINNED_GENERATION = (
     f"comfyui-v{PINNED['COMFY_VERSION']}-{PINNED['COMFY_COMMIT'][:12]}-"
     f"frontend-{PINNED['FRONTEND_VERSION']}-{PINNED['FRONTEND_COMMIT'][:12]}-"
-    f"python-{PINNED['PYTHON_VERSION']}-cu{PINNED['CUDA_VERSION'].replace('.', '')}"
+    f"python-{PINNED['PYTHON_VERSION']}-cu{PINNED['CUDA_VERSION'].replace('.', '')}-"
+    f"lock-{LOCK_SHA256}"
 )
 
 
@@ -67,6 +68,40 @@ def make_environment(root: Path) -> Path:
         "Frontend notices\n", encoding="utf-8"
     )
     (comfyui / "runtime/requirements.lock").write_bytes(CONSTRAINTS.read_bytes())
+    (comfyui / "runtime/python/LICENSE.txt").write_text(
+        "CPython license\n", encoding="utf-8"
+    )
+    license_root = comfyui / "runtime/LICENSES/python-packages"
+    packages = []
+    for package_name in (
+        "comfyui-frontend-package",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "nvidia-cublas",
+        "nvidia-cuda-runtime",
+        "nvidia-cudnn-cu13",
+    ):
+        relative = f"{package_name}/LICENSE"
+        notice = license_root / relative
+        notice.parent.mkdir(parents=True, exist_ok=True)
+        notice.write_text(f"{package_name} license\n", encoding="utf-8")
+        packages.append({"name": package_name, "license_files": [relative]})
+    (license_root / "packages.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "packages": packages,
+                "summary": {
+                    "distributions": len(packages),
+                    "with_license_files": len(packages),
+                    "metadata_only": 0,
+                    "unidentified": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     for name in ("python-portable", "repair-portable-entrypoints"):
         path = comfyui / "runtime/python/bin" / name
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -75,7 +110,9 @@ def make_environment(root: Path) -> Path:
     return comfyui
 
 
-def generate(root: Path) -> subprocess.CompletedProcess[str]:
+def generate(
+    root: Path, *, core_commit: str | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             "python3",
@@ -88,7 +125,7 @@ def generate(root: Path) -> subprocess.CompletedProcess[str]:
             "--core-tag",
             PINNED["COMFY_TAG"],
             "--core-commit",
-            PINNED["COMFY_COMMIT"],
+            core_commit or PINNED["COMFY_COMMIT"],
             "--frontend-version",
             PINNED["FRONTEND_VERSION"],
             "--frontend-commit",
@@ -128,7 +165,7 @@ def verify(root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_manifest_covers_core_runtime_and_relative_links(tmp_path: Path) -> None:
-    root = tmp_path / "environment"
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
     make_environment(root)
     assert generate(root).returncode == 0
     checked = verify(root)
@@ -165,7 +202,7 @@ def test_manifest_covers_core_runtime_and_relative_links(tmp_path: Path) -> None
 
 
 def test_verifier_rejects_tampering_and_persistent_payload(tmp_path: Path) -> None:
-    root = tmp_path / "environment"
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
     make_environment(root)
     assert generate(root).returncode == 0
     (root / "ComfyUI/main.py").write_text("tampered\n", encoding="utf-8")
@@ -181,12 +218,42 @@ def test_verifier_rejects_tampering_and_persistent_payload(tmp_path: Path) -> No
 
 
 def test_generator_rejects_escaping_link(tmp_path: Path) -> None:
-    root = tmp_path / "environment"
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
     comfyui = make_environment(root)
     (comfyui / "escape").symlink_to("../../outside")
     generated = generate(root)
     assert generated.returncode != 0
     assert "link escapes environment payload" in generated.stderr
+
+
+def test_verifier_requires_exact_core_root_identity_and_notices(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
+    make_environment(root)
+    assert generate(root).returncode == 0
+
+    renamed = tmp_path / "Portable-Comfy-core-v0.0.0"
+    root.rename(renamed)
+    checked = verify(renamed)
+    assert checked.returncode != 0
+    assert "root does not match manifest core.version" in checked.stderr
+
+    renamed.rename(root)
+    (root / "ComfyUI/frontend/THIRD_PARTY_NOTICES.md").unlink()
+    assert generate(root).returncode == 0
+    checked = verify(root)
+    assert checked.returncode != 0
+    assert "required redistribution notice" in checked.stderr
+
+
+def test_verifier_rejects_non_exact_upstream_commit_identity(tmp_path: Path) -> None:
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
+    make_environment(root)
+    assert generate(root, core_commit="abc").returncode == 0
+    checked = verify(root)
+    assert checked.returncode != 0
+    assert "Core version, tag, or commit is malformed" in checked.stderr
 
 
 def test_structural_builder_archives_only_atomic_environment(tmp_path: Path) -> None:

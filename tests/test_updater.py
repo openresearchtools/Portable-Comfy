@@ -70,8 +70,13 @@ def make_bundle(
     unsafe_link: str | None = None,
     runtime_overrides: dict[str, str] | None = None,
     identity_mismatch: bool = False,
+    core_overrides: dict[str, str] | None = None,
+    frontend_overrides: dict[str, str] | None = None,
+    outer_version: str = "9.9.9",
+    omitted_notice: str | None = None,
+    unlicensed_package: str | None = None,
 ) -> Path:
-    outer = tmp_path / "Portable-Comfy-core-v9.9.9"
+    outer = tmp_path / f"Portable-Comfy-core-v{outer_version}"
     core = outer / "ComfyUI"
     prefix = core / "runtime/python"
     (core / "frontend").mkdir(parents=True)
@@ -79,11 +84,17 @@ def make_bundle(
     (core / "runtime").mkdir(exist_ok=True)
     (outer / "manifest").mkdir()
     (core / "main.py").write_text("# new core\n", encoding="utf-8")
+    (core / "LICENSE").write_text("Core license\n", encoding="utf-8")
     (core / "frontend/index.html").write_text("<title>new</title>\n", encoding="utf-8")
+    (core / "frontend/LICENSE").write_text("Frontend license\n", encoding="utf-8")
+    (core / "frontend/THIRD_PARTY_NOTICES.md").write_text(
+        "Frontend notices\n", encoding="utf-8"
+    )
     (core / "new.txt").write_text("new payload\n", encoding="utf-8")
     python = prefix / "bin/python-portable"
     python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     python.chmod(0o755)
+    (prefix / "LICENSE.txt").write_text("CPython license\n", encoding="utf-8")
     (prefix / "bin/python3").symlink_to("python-portable")
     lock = core / "runtime/requirements.lock"
     lock.write_text("torch==3.0.0+cu140\n", encoding="utf-8")
@@ -95,8 +106,58 @@ def make_bundle(
         "requirements_lock_sha256": _sha256(lock),
         **(runtime_overrides or {}),
     }
-    core_identity = {"version": "9.9.9", "tag": "v9.9.9", "commit": "abc"}
-    frontend_identity = {"version": "8.8.8", "commit": "def"}
+    core_identity = {
+        "version": "9.9.9",
+        "tag": "v9.9.9",
+        "commit": "a" * 40,
+        **(core_overrides or {}),
+    }
+    frontend_identity = {
+        "version": "8.8.8",
+        "commit": "b" * 40,
+        **(frontend_overrides or {}),
+    }
+    license_root = core / "runtime/LICENSES/python-packages"
+    packages = []
+    for package_name in (
+        "comfyui-frontend-package",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "nvidia-cublas",
+        "nvidia-cuda-runtime",
+        "nvidia-cudnn-cu13",
+    ):
+        relative = f"{package_name}/LICENSE"
+        notice = license_root / relative
+        notice.parent.mkdir(parents=True, exist_ok=True)
+        notice.write_text(f"{package_name} license\n", encoding="utf-8")
+        packages.append(
+            {
+                "name": package_name,
+                "license_files": (
+                    [] if package_name == unlicensed_package else [relative]
+                ),
+            }
+        )
+    (license_root / "packages.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "packages": packages,
+                "summary": {
+                    "distributions": len(packages),
+                    "with_license_files": len(packages)
+                    - int(unlicensed_package is not None),
+                    "metadata_only": int(unlicensed_package is not None),
+                    "unidentified": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    if omitted_notice is not None:
+        (core / omitted_notice).unlink()
     identity = {
         "schema_version": 1,
         "app_id": "portable-comfy",
@@ -308,6 +369,83 @@ def test_visible_identity_must_match_top_manifest(
     ):
         updater.install_bundle(make_bundle(tmp_path, identity_mismatch=True))
     assert supervisor.stops == 0
+
+
+@pytest.mark.parametrize(
+    ("core_overrides", "frontend_overrides"),
+    [
+        ({"version": "9"}, {}),
+        ({"tag": "release-9.9.9"}, {}),
+        ({"commit": "abc"}, {}),
+        ({}, {"version": "8"}),
+        ({}, {"commit": "def"}),
+    ],
+)
+def test_exact_core_and_frontend_identity_is_required(
+    portable_root: PortablePaths,
+    tmp_path: Path,
+    core_overrides: dict[str, str],
+    frontend_overrides: dict[str, str],
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match="version|tag|commit"):
+        updater.install_bundle(
+            make_bundle(
+                tmp_path,
+                core_overrides=core_overrides,
+                frontend_overrides=frontend_overrides,
+            )
+        )
+
+
+def test_archive_root_version_must_match_manifest(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match="root does not match"):
+        updater.install_bundle(make_bundle(tmp_path, outer_version="9.9.8"))
+
+
+@pytest.mark.parametrize(
+    "notice",
+    [
+        "LICENSE",
+        "frontend/LICENSE",
+        "frontend/THIRD_PARTY_NOTICES.md",
+        "runtime/python/LICENSE.txt",
+        "runtime/LICENSES/python-packages/packages.json",
+    ],
+)
+def test_complete_core_bundle_requires_redistribution_notices(
+    portable_root: PortablePaths, tmp_path: Path, notice: str
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match="redistribution notice"):
+        updater.install_bundle(make_bundle(tmp_path, omitted_notice=notice))
+
+
+def test_every_runtime_package_requires_a_bundled_license_file(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match="not comprehensive"):
+        updater.install_bundle(make_bundle(tmp_path, unlicensed_package="torchvision"))
 
 
 def test_manifested_dangling_symlink_is_rejected(

@@ -12,7 +12,7 @@ cache_dir="${CACHE_DIR:-$REPO_ROOT/.cache/portable-comfy}"
 [[ -n "$destination" ]] || die "usage: $0 DESTINATION"
 destination="$(absolute_path "$destination")"
 
-require_command curl python3 sha256sum tar unzip
+require_command curl git python3 sha256sum tar unzip
 mkdir -p -- "$cache_dir"
 source_archive="$cache_dir/ComfyUI-${COMFY_COMMIT}.tar.gz"
 frontend_wheel="$cache_dir/comfyui_frontend_package-${FRONTEND_VERSION}-py3-none-any.whl"
@@ -31,7 +31,10 @@ tar -xzf "$source_archive" -C "$temporary" --no-same-owner --no-same-permissions
 extracted="$(find "$temporary" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [[ -n "$extracted" && -f "$extracted/main.py" ]] || die "ComfyUI archive has unexpected layout"
 python3 "$SCRIPT_DIR/verify_core_identity.py" \
-  "$extracted" "$COMFY_VERSION" "$FRONTEND_VERSION"
+  "$extracted" "$COMFY_VERSION" "$FRONTEND_VERSION" \
+  --frontend-wheel "$frontend_wheel" \
+  --core-commit "$COMFY_COMMIT" --frontend-commit "$FRONTEND_COMMIT" \
+  --verify-upstream-tags
 cp -a -- "$extracted/." "$destination/"
 rm -rf -- "$destination/.github" "$destination/.git"
 

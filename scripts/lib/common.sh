@@ -35,10 +35,10 @@ verify_runtime_constraints() {
 
 environment_generation_id() {
   local cuda_slug="${CUDA_VERSION//./}"
-  printf 'comfyui-v%s-%s-frontend-%s-%s-python-%s-cu%s\n' \
+  printf 'comfyui-v%s-%s-frontend-%s-%s-python-%s-cu%s-lock-%s\n' \
     "$COMFY_VERSION" "${COMFY_COMMIT:0:12}" \
     "$FRONTEND_VERSION" "${FRONTEND_COMMIT:0:12}" \
-    "$PYTHON_VERSION" "$cuda_slug"
+    "$PYTHON_VERSION" "$cuda_slug" "$RUNTIME_LOCK_SHA256"
 }
 
 core_bundle_basename() {
