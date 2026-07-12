@@ -189,6 +189,6 @@ requests and pushes. The multi-gigabyte CUDA build is deliberately manual via
 
 ## License
 
-Portable Comfy is licensed under GPL-3.0-only. Bundled components retain their
+Portable Comfy is licensed under GPL-3.0. Bundled components retain their
 own licenses. The portable CPython runtime is built from upstream CPython
 source rather than copied from a third-party standalone distribution.
