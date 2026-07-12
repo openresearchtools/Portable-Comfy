@@ -6,8 +6,7 @@ pywebview/Qt launcher owns the ComfyUI server process, while models, workflows,
 custom nodes and user data remain in a movable directory beside the launcher.
 No system Python or CUDA toolkit is used.
 
-This repository is an early Linux x86-64 prototype. Builds are currently
-published only as short-lived GitHub Actions artifacts, not as Releases.
+This repository is an early Linux x86-64 prototype. 
 
 ## Portable layout
 
@@ -195,7 +194,7 @@ on hosted runners.
 
 ## License
 
-Portable Comfy is licensed under GPL-3.0-only. Bundled components retain their
+Portable Comfy is licensed under GPL-3.0. Bundled components retain their
 own licenses. The portable CPython runtime is built from upstream CPython
 source rather than copied from a third-party standalone distribution. The
 complete archive keeps the project license at its top level and provides an
