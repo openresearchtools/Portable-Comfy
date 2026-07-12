@@ -7,6 +7,8 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parents[1]
 CONSTRAINTS = REPO / "packaging/runtime-constraints.txt"
@@ -56,7 +58,7 @@ PINNED_GENERATION = (
 )
 
 
-def make_environment(root: Path) -> Path:
+def make_environment(root: Path, *, frozen_requirements: str | None = None) -> Path:
     comfyui = root / "ComfyUI"
     (comfyui / "frontend").mkdir(parents=True)
     (comfyui / "runtime/python/bin").mkdir(parents=True)
@@ -86,7 +88,9 @@ def make_environment(root: Path) -> Path:
         notice = license_root / relative
         notice.parent.mkdir(parents=True, exist_ok=True)
         notice.write_text(f"{package_name} license\n", encoding="utf-8")
-        packages.append({"name": package_name, "license_files": [relative]})
+        packages.append(
+            {"name": package_name, "version": "1.0", "license_files": [relative]}
+        )
     (license_root / "packages.json").write_text(
         json.dumps(
             {
@@ -100,6 +104,14 @@ def make_environment(root: Path) -> Path:
                 },
             }
         ),
+        encoding="utf-8",
+    )
+    default_freeze = "".join(
+        f"{package['name'].replace('-', '_')}=={package['version']}\n"
+        for package in packages
+    )
+    (comfyui / "runtime/installed-requirements.txt").write_text(
+        default_freeze if frozen_requirements is None else frozen_requirements,
         encoding="utf-8",
     )
     for name in ("python-portable", "repair-portable-entrypoints"):
@@ -254,6 +266,39 @@ def test_verifier_rejects_non_exact_upstream_commit_identity(tmp_path: Path) -> 
     checked = verify(root)
     assert checked.returncode != 0
     assert "Core version, tag, or commit is malformed" in checked.stderr
+
+
+@pytest.mark.parametrize(
+    ("frozen_requirements", "message"),
+    [
+        ("torch==1.0\n", "disagree"),
+        ("torch==1.0\nTorch==1.0\n", "duplicate package"),
+        ("torch @ file:///tmp/torch\n", "not exact NAME==VERSION"),
+    ],
+)
+def test_verifier_binds_license_inventory_to_installed_runtime_freeze(
+    tmp_path: Path, frozen_requirements: str, message: str
+) -> None:
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
+    make_environment(root, frozen_requirements=frozen_requirements)
+    assert generate(root).returncode == 0
+    checked = verify(root)
+    assert checked.returncode != 0
+    assert message in checked.stderr
+
+
+def test_verifier_binds_installed_versions_to_license_inventory(tmp_path: Path) -> None:
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
+    make_environment(root)
+    freeze = root / "ComfyUI/runtime/installed-requirements.txt"
+    freeze.write_text(
+        freeze.read_text(encoding="utf-8").replace("torch==1.0", "torch==2.0"),
+        encoding="utf-8",
+    )
+    assert generate(root).returncode == 0
+    checked = verify(root)
+    assert checked.returncode != 0
+    assert "package license inventory disagree" in checked.stderr
 
 
 def test_structural_builder_archives_only_atomic_environment(tmp_path: Path) -> None:

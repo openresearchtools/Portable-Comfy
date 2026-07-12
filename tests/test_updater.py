@@ -75,6 +75,9 @@ def make_bundle(
     outer_version: str = "9.9.9",
     omitted_notice: str | None = None,
     unlicensed_package: str | None = None,
+    frozen_requirements: str | None = None,
+    frozen_version_overrides: dict[str, str] | None = None,
+    omit_frozen_requirements: bool = False,
 ) -> Path:
     outer = tmp_path / f"Portable-Comfy-core-v{outer_version}"
     core = outer / "ComfyUI"
@@ -135,6 +138,7 @@ def make_bundle(
         packages.append(
             {
                 "name": package_name,
+                "version": "1.0",
                 "license_files": (
                     [] if package_name == unlicensed_package else [relative]
                 ),
@@ -156,6 +160,16 @@ def make_bundle(
         ),
         encoding="utf-8",
     )
+    if not omit_frozen_requirements:
+        default_freeze = "".join(
+            f"{package['name'].replace('-', '_')}=="
+            f"{(frozen_version_overrides or {}).get(str(package['name']), str(package['version']))}\n"
+            for package in packages
+        )
+        (core / "runtime/installed-requirements.txt").write_text(
+            default_freeze if frozen_requirements is None else frozen_requirements,
+            encoding="utf-8",
+        )
     if omitted_notice is not None:
         (core / omitted_notice).unlink()
     identity = {
@@ -446,6 +460,57 @@ def test_every_runtime_package_requires_a_bundled_license_file(
     )
     with pytest.raises(BundleValidationError, match="not comprehensive"):
         updater.install_bundle(make_bundle(tmp_path, unlicensed_package="torchvision"))
+
+
+@pytest.mark.parametrize(
+    ("frozen_requirements", "message"),
+    [
+        ("torch==1.0\n", "disagree"),
+        ("torch==1.0\nTorch==1.0\n", "duplicate package"),
+        ("torch>=1.0\n", "not exact NAME==VERSION"),
+    ],
+)
+def test_installed_runtime_freeze_must_exactly_match_license_inventory(
+    portable_root: PortablePaths,
+    tmp_path: Path,
+    frozen_requirements: str,
+    message: str,
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match=message):
+        updater.install_bundle(
+            make_bundle(tmp_path, frozen_requirements=frozen_requirements)
+        )
+
+
+def test_complete_core_bundle_requires_installed_runtime_freeze(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match="freeze is missing"):
+        updater.install_bundle(make_bundle(tmp_path, omit_frozen_requirements=True))
+
+
+def test_installed_runtime_versions_must_match_license_inventory(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match="disagree"):
+        updater.install_bundle(
+            make_bundle(tmp_path, frozen_version_overrides={"torch": "2.0"})
+        )
 
 
 def test_manifested_dangling_symlink_is_rejected(

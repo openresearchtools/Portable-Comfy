@@ -17,10 +17,13 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(
     r"^[0-9]+(?:\.[0-9]+){2}(?:[-+._]?[0-9A-Za-z][0-9A-Za-z._+-]{0,63})?$"
 )
+FROZEN_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^=\s]+)$")
+DISTRIBUTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
 STRICT_TOP_LEVEL = {"ComfyUI", "manifest", "LICENSES"}
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
+RUNTIME_INSTALLED_REQUIREMENTS = "ComfyUI/runtime/installed-requirements.txt"
 CORE_LICENSE_FILES = (
     "ComfyUI/LICENSE",
     "ComfyUI/frontend/LICENSE",
@@ -120,6 +123,15 @@ def require_license_files(
     if not runtime:
         return
 
+    installed_entry = expected.get(RUNTIME_INSTALLED_REQUIREMENTS)
+    if (
+        installed_entry is None
+        or installed_entry.get("type") != "file"
+        or not isinstance(installed_entry.get("size"), int)
+        or installed_entry["size"] <= 0
+    ):
+        fail("installed runtime requirements freeze is missing or empty")
+
     inventory_path = root / RUNTIME_LICENSE_INVENTORY
     try:
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
@@ -142,15 +154,31 @@ def require_license_files(
         fail("runtime package license inventory is not comprehensive")
 
     licensed: set[str] = set()
+    inventory_versions: dict[str, str] = {}
     inventory_parent = PurePosixPath(RUNTIME_LICENSE_INVENTORY).parent
     for package in inventory["packages"]:
         if not isinstance(package, dict):
             fail("runtime package license inventory contains a malformed package")
         name = package.get("name")
+        version = package.get("version")
         files = package.get("license_files")
-        if not isinstance(name, str) or not isinstance(files, list):
+        if (
+            not isinstance(name, str)
+            or not DISTRIBUTION_NAME.fullmatch(name)
+            or not isinstance(version, str)
+            or not version
+            or "=" in version
+            or any(character.isspace() for character in version)
+            or not isinstance(files, list)
+        ):
             fail("runtime package license inventory contains malformed fields")
         normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+        if normalized_name in inventory_versions:
+            fail(
+                "runtime package license inventory contains duplicate names: "
+                f"{normalized_name}"
+            )
+        inventory_versions[normalized_name] = version
         if not files:
             fail(f"runtime package has no bundled license file: {normalized_name}")
         licensed.add(normalized_name)
@@ -181,6 +209,35 @@ def require_license_files(
     missing = sorted(REQUIRED_RUNTIME_LICENSE_PACKAGES - licensed)
     if missing:
         fail("runtime package has no bundled license file: " + missing[0])
+    frozen = read_frozen_requirements(root / RUNTIME_INSTALLED_REQUIREMENTS)
+    if frozen != inventory_versions:
+        fail("installed runtime requirements and package license inventory disagree")
+
+
+def read_frozen_requirements(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read installed runtime requirements: {error}")
+    if not lines:
+        fail("installed runtime requirements are empty")
+    frozen: dict[str, str] = {}
+    for line_number, line in enumerate(lines, start=1):
+        match = FROZEN_REQUIREMENT.fullmatch(line)
+        if match is None:
+            fail(
+                "installed runtime requirements line is not exact "
+                f"NAME==VERSION at line {line_number}"
+            )
+        name, version = match.groups()
+        normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+        if normalized_name in frozen:
+            fail(
+                "installed runtime requirements contain a duplicate package: "
+                f"{normalized_name}"
+            )
+        frozen[normalized_name] = version
+    return frozen
 
 
 def main() -> None:

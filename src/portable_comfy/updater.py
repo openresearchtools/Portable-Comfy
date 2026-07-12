@@ -29,6 +29,8 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(
     r"^[0-9]+(?:\.[0-9]+){2}(?:[-+._]?[0-9A-Za-z][0-9A-Za-z._+-]{0,63})?$"
 )
+FROZEN_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^=\s]+)$")
+DISTRIBUTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 GENERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
 # "Core bundle" is the public artifact name. It always means the complete,
 # self-contained ComfyUI/ generation: Core source, matching frontend, private
@@ -39,6 +41,7 @@ MAX_UNPACKED_BYTES = 32 * 1024**3
 TRANSACTION_MARKER = "environment-update-transaction.json"
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
+RUNTIME_INSTALLED_REQUIREMENTS = "ComfyUI/runtime/installed-requirements.txt"
 REQUIRED_LICENSE_FILES = (
     "ComfyUI/LICENSE",
     "ComfyUI/frontend/LICENSE",
@@ -551,6 +554,11 @@ class EnvironmentUpdater:
                 raise BundleValidationError(
                     f"required redistribution notice is missing or empty: {path_text}"
                 )
+        installed_entry = regular.get(RUNTIME_INSTALLED_REQUIREMENTS)
+        if installed_entry is None or installed_entry[1] <= 0:
+            raise BundleValidationError(
+                "installed runtime requirements freeze is missing or empty"
+            )
         EnvironmentUpdater._validate_runtime_license_inventory(root, regular)
 
         identity_path = root / "ComfyUI" / IDENTITY_NAME
@@ -631,6 +639,7 @@ class EnvironmentUpdater:
             )
 
         licensed: set[str] = set()
+        inventory_versions: dict[str, str] = {}
         inventory_parent = PurePosixPath(RUNTIME_LICENSE_INVENTORY).parent
         for package in inventory["packages"]:
             if not isinstance(package, dict):
@@ -638,12 +647,27 @@ class EnvironmentUpdater:
                     "runtime package license inventory contains a malformed package"
                 )
             name = package.get("name")
+            version = package.get("version")
             files = package.get("license_files")
-            if not isinstance(name, str) or not isinstance(files, list):
+            if (
+                not isinstance(name, str)
+                or not DISTRIBUTION_NAME.fullmatch(name)
+                or not isinstance(version, str)
+                or not version
+                or "=" in version
+                or any(character.isspace() for character in version)
+                or not isinstance(files, list)
+            ):
                 raise BundleValidationError(
                     "runtime package license inventory contains malformed fields"
                 )
             normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+            if normalized_name in inventory_versions:
+                raise BundleValidationError(
+                    "runtime package license inventory contains duplicate names: "
+                    f"{normalized_name}"
+                )
+            inventory_versions[normalized_name] = version
             if not files:
                 raise BundleValidationError(
                     f"runtime package has no bundled license file: {normalized_name}"
@@ -678,6 +702,41 @@ class EnvironmentUpdater:
             raise BundleValidationError(
                 "runtime package has no bundled license file: " + missing[0]
             )
+        frozen = EnvironmentUpdater._read_frozen_requirements(
+            root / RUNTIME_INSTALLED_REQUIREMENTS
+        )
+        if frozen != inventory_versions:
+            raise BundleValidationError(
+                "installed runtime requirements and package license inventory disagree"
+            )
+
+    @staticmethod
+    def _read_frozen_requirements(path: Path) -> dict[str, str]:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            raise BundleValidationError(
+                f"cannot read installed runtime requirements: {error}"
+            ) from error
+        if not lines:
+            raise BundleValidationError("installed runtime requirements are empty")
+        frozen: dict[str, str] = {}
+        for line_number, line in enumerate(lines, start=1):
+            match = FROZEN_REQUIREMENT.fullmatch(line)
+            if match is None:
+                raise BundleValidationError(
+                    "installed runtime requirements line is not exact "
+                    f"NAME==VERSION at line {line_number}"
+                )
+            name, version = match.groups()
+            normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+            if normalized_name in frozen:
+                raise BundleValidationError(
+                    "installed runtime requirements contain a duplicate package: "
+                    f"{normalized_name}"
+                )
+            frozen[normalized_name] = version
+        return frozen
 
     def _preflight(self, bundle: ValidatedBundle) -> None:
         candidate = bundle.environment
