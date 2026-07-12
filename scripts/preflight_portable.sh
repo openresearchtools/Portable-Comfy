@@ -70,6 +70,20 @@ for model in "${taesd_models[@]}"; do
 done
 [[ -s "$root/manifest/builtin-models.json" && -s "$root/LICENSES/TAESD-MIT.txt" ]] \
   || die "TAESD manifest or MIT license is missing"
+required_notices=(
+  LICENSE
+  LICENSES/Portable-Comfy-GPL-3.0.txt
+  LICENSES/ComfyUI-GPL-3.0.txt
+  LICENSES/ComfyUI-Frontend-GPL-3.0.txt
+  LICENSES/ComfyUI-Frontend-THIRD-PARTY-NOTICES.md
+  LICENSES/README.txt
+  ComfyUI/LICENSE
+  ComfyUI/frontend/LICENSE
+  ComfyUI/frontend/THIRD_PARTY_NOTICES.md
+)
+for notice in "${required_notices[@]}"; do
+  [[ -s "$root/$notice" ]] || die "redistribution notice is missing: $notice"
+done
 [[ -L "$root/user/default/workflows" ]] || die "user/default/workflows must be a relative symlink"
 [[ "$(readlink "$root/user/default/workflows")" == ../../workflows ]] \
   || die "workflow symlink has the wrong target"
@@ -130,6 +144,55 @@ if ((structural == 0)); then
   [[ -x "$appimage" ]] || die "AppImage is missing or not executable"
   [[ -x "$prefix/bin/repair-portable-entrypoints" ]] \
     || die "runtime relocation repair tool is missing"
+  runtime_notices="$root/ComfyUI/runtime/LICENSES/python-packages/packages.json"
+  launcher_notices="$root/LICENSES/launcher-python-packages/packages.json"
+  native_notices="$root/LICENSES/launcher-native-packages/packages.tsv"
+  [[ -s "$prefix/LICENSE.txt" \
+     && -s "$root/LICENSES/CPython-PSF-2.0.txt" \
+     && -s "$root/LICENSES/AppImage-runtime-MIT.txt" \
+     && -s "$root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt" \
+     && -s "$runtime_notices" \
+     && -s "$launcher_notices" \
+     && -s "$native_notices" ]] \
+    || die "runtime/AppImage redistribution notices are incomplete"
+  python3 - "$runtime_notices" "$launcher_notices" "$native_notices" <<'PY'
+import csv
+import json
+import sys
+
+runtime_path, launcher_path, native_path = sys.argv[1:]
+
+def licensed(path):
+    data = json.load(open(path, encoding="utf-8"))
+    assert data["schema_version"] == 2
+    return {
+        package["name"].lower().replace("_", "-")
+        for package in data["packages"]
+        if package["license_files"]
+    }
+
+runtime = licensed(runtime_path)
+assert {
+    "torch", "torchvision", "torchaudio", "nvidia-cublas",
+    "nvidia-cuda-runtime", "nvidia-cudnn-cu13", "comfyui-frontend-package",
+} <= runtime
+launcher = licensed(launcher_path)
+assert {
+    "portable-comfy", "pyinstaller", "pywebview", "proxy-tools",
+    "pyqt6", "pyqt6-qt6",
+    "pyqt6-webengine", "pyqt6-webengine-qt6", "pyqt6-sip", "qtpy",
+} <= launcher
+with open(native_path, encoding="utf-8", newline="") as stream:
+    libraries = {row["library"] for row in csv.DictReader(stream, delimiter="\t")}
+assert {
+    "libpulse.so.0", "libxcb-cursor.so.0", "libxcb-icccm.so.4",
+    "libxcb-image.so.0", "libxcb-keysyms.so.1", "libxcb-render-util.so.0",
+    "libxcb-shape.so.0", "libxcb-util.so.1", "libxcb-xkb.so.1",
+    "libxkbcommon-x11.so.0", "libwayland-client.so.0",
+    "libwayland-cursor.so.0", "libwayland-egl.so.1",
+    "libwayland-server.so.0",
+} <= libraries
+PY
   "$prefix/bin/repair-portable-entrypoints"
   [[ "$(cat "$prefix/.portable-comfy-prefix")" == "$(realpath "$prefix")" ]] \
     || die "runtime prefix stamp was not repaired after relocation"

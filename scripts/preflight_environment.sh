@@ -49,6 +49,11 @@ if ((structural)); then
 fi
 python3 "$SCRIPT_DIR/verify_environment_bundle.py" "${verify_args[@]}"
 
+[[ -s "$root/ComfyUI/LICENSE" \
+   && -s "$root/ComfyUI/frontend/LICENSE" \
+   && -s "$root/ComfyUI/frontend/THIRD_PARTY_NOTICES.md" ]] \
+  || die "ComfyUI Core/frontend redistribution notices are incomplete"
+
 python3 - "$root/manifest/environment.json" <<PY
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))["runtime"]
@@ -70,6 +75,9 @@ if ((structural == 0)); then
   python="$prefix/bin/python-portable"
   repair="$prefix/bin/repair-portable-entrypoints"
   [[ -x "$python" && -x "$repair" ]] || die "portable environment runtime is incomplete"
+  [[ -s "$prefix/LICENSE.txt" \
+     && -s "$root/ComfyUI/runtime/LICENSES/python-packages/packages.json" ]] \
+    || die "CPython or runtime-package redistribution notices are missing"
   "$repair"
   [[ "$(cat "$prefix/.portable-comfy-prefix")" == "$(realpath "$prefix")" ]] \
     || die "environment runtime prefix stamp was not repaired"

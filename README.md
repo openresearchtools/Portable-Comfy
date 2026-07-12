@@ -190,4 +190,11 @@ on hosted runners.
 
 Portable Comfy is licensed under GPL-3.0-only. Bundled components retain their
 own licenses. The portable CPython runtime is built from upstream CPython
-source rather than copied from a third-party standalone distribution.
+source rather than copied from a third-party standalone distribution. The
+complete archive keeps the project license at its top level and provides an
+indexed `LICENSES/` directory. Core and frontend notices also travel inside
+the replaceable `ComfyUI/` environment; CPython's PSF license sits beside the
+interpreter; installed Python/Torch/CUDA wheel notices sit under
+`ComfyUI/runtime/LICENSES/`; and AppImage launcher notices cover PyWebView,
+PyInstaller, PyQt/Qt WebEngine, Chromium, the embedded AppImage runtime and
+native Ubuntu libraries copied into the launcher.

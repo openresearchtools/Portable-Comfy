@@ -33,7 +33,16 @@ export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$REPO_ROOT/.cache/pip}"
   "pygit2==$PYGIT2_VERSION"
 "$python" -m pip check
 "$python" -m pip freeze --all | LC_ALL=C sort >"$comfyui_root/runtime/installed-requirements.txt"
-"$python" "$SCRIPT_DIR/collect_licenses.py" "$comfyui_root/runtime/LICENSES/python-packages"
+"$python" "$SCRIPT_DIR/collect_licenses.py" \
+  "$comfyui_root/runtime/LICENSES/python-packages" \
+  --extra-license-file "comfyui_frontend_package=$comfyui_root/frontend/LICENSE" \
+  --require-license-file comfyui_frontend_package \
+  --require-license-file torch \
+  --require-license-file torchvision \
+  --require-license-file torchaudio \
+  --require-license-file nvidia-cublas \
+  --require-license-file nvidia-cuda-runtime \
+  --require-license-file nvidia-cudnn-cu13
 
 "$python" - <<PY
 import importlib.util

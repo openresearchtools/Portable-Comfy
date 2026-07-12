@@ -62,6 +62,31 @@ cp -- "$REPO_ROOT/LICENSE" "$portable_root/LICENSE"
 mkdir -p -- "$portable_root/LICENSES"
 cp -- "$REPO_ROOT/LICENSE" "$portable_root/LICENSES/Portable-Comfy-GPL-3.0.txt"
 cp -- "$portable_root/ComfyUI/LICENSE" "$portable_root/LICENSES/ComfyUI-GPL-3.0.txt"
+cp -- "$portable_root/ComfyUI/frontend/LICENSE" \
+  "$portable_root/LICENSES/ComfyUI-Frontend-GPL-3.0.txt"
+cp -- "$portable_root/ComfyUI/frontend/THIRD_PARTY_NOTICES.md" \
+  "$portable_root/LICENSES/ComfyUI-Frontend-THIRD-PARTY-NOTICES.md"
+cat >"$portable_root/LICENSES/README.txt" <<'EOF'
+Portable Comfy redistribution notices
+======================================
+
+Portable-Comfy-GPL-3.0.txt applies to the launcher in this project.
+ComfyUI-GPL-3.0.txt applies to ComfyUI Core.
+ComfyUI-Frontend-GPL-3.0.txt and the adjacent third-party notices apply to
+the matching compiled frontend.
+TAESD-MIT.txt applies to the bundled preview encoder/decoder model weights.
+
+The portable interpreter's PSF license is both CPython-PSF-2.0.txt here and
+ComfyUI/runtime/python/LICENSE.txt beside the interpreter. Notices and a
+machine-readable inventory for installed Core, Torch and CUDA Python wheels
+are under ComfyUI/runtime/LICENSES/python-packages/.
+
+Notices for the frozen launcher packages (including PyWebView, PyInstaller,
+PyQt6, Qt and Qt WebEngine) are under launcher-python-packages/. Notices and
+an inventory for native libraries copied from the Ubuntu build host are under
+launcher-native-packages/. The embedded AppImage type-2 runtime notice is
+AppImage-runtime-MIT.txt.
+EOF
 "$SCRIPT_DIR/install_builtin_models.sh" "$portable_root"
 
 if ((skip_runtime == 0)); then

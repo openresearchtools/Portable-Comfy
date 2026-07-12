@@ -16,8 +16,12 @@ require_command curl sha256sum tar unzip
 mkdir -p -- "$cache_dir"
 source_archive="$cache_dir/ComfyUI-${COMFY_COMMIT}.tar.gz"
 frontend_wheel="$cache_dir/comfyui_frontend_package-${FRONTEND_VERSION}-py3-none-any.whl"
+frontend_license="$cache_dir/ComfyUI-frontend-${FRONTEND_COMMIT}-LICENSE"
+frontend_notices="$cache_dir/ComfyUI-frontend-${FRONTEND_COMMIT}-THIRD_PARTY_NOTICES.md"
 download_verified "$COMFY_ARCHIVE_URL" "$source_archive" "$COMFY_ARCHIVE_SHA256"
 download_verified "$FRONTEND_WHEEL_URL" "$frontend_wheel" "$FRONTEND_WHEEL_SHA256"
+download_verified "$FRONTEND_LICENSE_URL" "$frontend_license" "$FRONTEND_LICENSE_SHA256"
+download_verified "$FRONTEND_NOTICES_URL" "$frontend_notices" "$FRONTEND_NOTICES_SHA256"
 
 safe_rm_tree "$destination"
 mkdir -p -- "$destination"
@@ -42,6 +46,12 @@ cat >"$destination/.portable-comfy.json" <<EOF
   "runtime": {"python": "$PYTHON_VERSION", "torch": "$TORCH_VERSION", "cuda": "$CUDA_VERSION", "platform": "linux-x86_64", "requirements_lock_sha256": "$RUNTIME_LOCK_SHA256"}
 }
 EOF
+
+# The frontend wheel contains only compiled static assets and no dist-info
+# license metadata. Bind the notices from the exact pinned source commit into
+# the same replaceable ComfyUI generation as those assets.
+install -m 0644 -- "$frontend_license" "$destination/frontend/LICENSE"
+install -m 0644 -- "$frontend_notices" "$destination/frontend/THIRD_PARTY_NOTICES.md"
 
 if find "$destination" -type l -print -quit | grep -q .; then
   die "ComfyUI update content contains symbolic links"
