@@ -148,11 +148,11 @@ their documented host prerequisites.
   removed library/offline-compilation support for Maxwell, Pascal and Volta.
   CUDA user-space libraries ship with Torch; the kernel driver remains a host
   responsibility.
-- A Wayland desktop with XWayland compatibility (the Ubuntu 26.04 default), or
-  an X11 session on older supported systems. The launcher uses the XCB path by
-  default to avoid the Qt/Wayland EGL failure reproduced on NVIDIA; users may
-  explicitly override the Qt platform. The renderer is bundled, so system
-  WebKitGTK is not required.
+- A Wayland desktop, with or without XWayland, or an X11 session on older
+  supported systems. When `DISPLAY` exists the launcher uses the proven XCB
+  path to avoid the Qt/Wayland EGL failure reproduced on NVIDIA. A hardened
+  Wayland session with no `DISPLAY` automatically uses native Qt Wayland. The
+  renderer is bundled, so system WebKitGTK is not required.
 - FUSE 2 for normal double-click AppImage mounting (`libfuse2` on Ubuntu 22.04
   or `libfuse2t64` on Ubuntu 24.04/26.04). If FUSE is unavailable, the same
   file can run with `--appimage-extract-and-run` at the cost of temporary
@@ -161,12 +161,14 @@ their documented host prerequisites.
   Large generation models are not shipped; only the small TAESD preview
   weights described above are bundled.
 
-The Actions smoke test uses a real XCB window beneath Xvfb and validates the
-Qt WebEngine viewport through a smoke-only loopback DevTools capture. It proves
-packaging, a real transactional environment swap with persistent-data
-sentinels, mapped-window rendering, server ownership and shutdown without
-claiming GPU inference. GPU inference must additionally be tested on an R580+
-NVIDIA host.
+The Actions smoke tests use both a real XCB window beneath Xvfb and an Ubuntu
+26.04 native-Wayland session beneath Weston's in-memory compositor. The latter
+unsets `DISPLAY` and asserts that no Xwayland process exists. Both validate the
+Qt WebEngine viewport through a smoke-only loopback DevTools capture. Together
+they prove packaging, a real transactional environment swap with
+persistent-data sentinels, rendered-window content, server ownership and
+shutdown without claiming GPU inference. GPU inference must additionally be
+tested on an R580+ NVIDIA host.
 
 ## Development
 

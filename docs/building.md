@@ -58,6 +58,20 @@ scripts/smoke_artifact.sh \
   --allow-no-gpu
 ```
 
+On an active Wayland session, exercise the no-Xwayland fallback explicitly:
+
+```bash
+scripts/smoke_artifact.sh \
+  artifacts/Portable-Comfy-linux-x86_64.tar.gz \
+  --timeout 120 \
+  --allow-no-gpu \
+  --native-wayland
+```
+
+That mode removes `DISPLAY`, verifies that AppRun selects native Wayland, and
+uses the WebEngine surface itself for visual evidence because Wayland does not
+permit an unrelated process to enumerate global windows.
+
 `build_environment_bundle.sh` can reuse an already completed first-install
 staging tree instead of rebuilding CPython and CUDA packages:
 
@@ -119,6 +133,10 @@ Actions tab. It performs these gates:
    installs it through the real transactional updater into an extracted
    first-install tree, and then launches the complete artifact's server and
    frozen desktop shell.
+6. In parallel, starts an Ubuntu 26.04 hosted runner, downloads the complete
+   artifact, launches a native in-memory Weston compositor without `DISPLAY`,
+   asserts that no Xwayland process exists, and repeats the rendered AppImage
+   and owned-server-shutdown smoke.
 
 GitHub's artifact service wraps uploaded files in its own downloadable
 container; `compression-level: 0` avoids trying to recompress the inner
@@ -162,6 +180,8 @@ The downloaded first-install smoke test runs without an NVIDIA GPU and uses
 - complete-archive integrity and relocatable paths;
 - server startup and HTTP readiness;
 - the actual AppImage creating a mapped XCB Qt WebEngine window beneath Xvfb;
+- the same AppImage selecting native Wayland on Ubuntu 26.04 with no
+  `DISPLAY`/Xwayland fallback;
 - smoke-only loopback DevTools capture of the viewport to PNG plus usable-pixel
   validation after the compiled frontend reports ready;
 - clean window closure and launcher-owned server shutdown with no surviving
