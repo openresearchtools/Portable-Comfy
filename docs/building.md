@@ -1,7 +1,7 @@
 # Building and testing
 
-The repository has a fast launcher/manifest test path and a slower pinned
-portable-runtime build. The CUDA workflow is manual because both final
+The repository has local launcher/manifest tests and one manual pinned
+portable-runtime workflow. The CUDA workflow is manual because both final
 artifacts and their intermediate trees are several gigabytes.
 
 ## Local tests
@@ -125,18 +125,14 @@ Actions tab. It performs these gates:
 2. Builds the complete first-install archive, then creates the environment
    archive from that exact completed staging tree without reinstalling
    dependencies.
-3. Preflights both archives after relocation and records their SHA-256 values.
+3. Structurally preflights both archives after relocation, exercises their
+   bundled interpreters without launching a desktop, and records SHA-256 values
+   in the job log.
 4. Uploads both multi-gigabyte archives with one-day retention and no redundant
    outer compression.
-5. Starts a fresh Ubuntu 24.04 job, downloads both uploaded artifacts, verifies
-   the published checksums, independently preflights the environment archive,
-   installs it through the real transactional updater into an extracted
-   first-install tree, and then launches the complete artifact's server and
-   frozen desktop shell.
-6. In parallel, starts an Ubuntu 26.04 hosted runner, downloads the complete
-   artifact, launches a native in-memory Weston compositor without `DISPLAY`,
-   asserts that no Xwayland process exists, and repeats the rendered AppImage
-   and owned-server-shutdown smoke.
+
+The workflow has one build job. It does not install Xvfb or Weston, emulate a
+desktop, launch Qt WebEngine, or run GUI smoke tests on a hosted runner.
 
 GitHub's artifact service wraps uploaded files in its own downloadable
 container; `compression-level: 0` avoids trying to recompress the inner
@@ -147,8 +143,8 @@ After a successful run, download the same short-lived files locally with the
 GitHub CLI (replace `RUN_ID` with the workflow run ID):
 
 ```bash
-gh run download RUN_ID --name Portable-Comfy-linux-x86_64
-gh run download RUN_ID --name Portable-Comfy-environment-v0.27.0
+gh run download RUN_ID --name Portable-Comfy-linux-x86_64.tar.gz
+gh run download RUN_ID --name Portable-Comfy-core-v0.27.0.tar.gz
 ```
 
 Actions artifacts consume account artifact storage even for a public
@@ -157,24 +153,23 @@ storage or per-artifact service limits. A failed upload is a distribution
 failure and must remain visible; the workflow must not silently omit CUDA or
 substitute a smaller CPU package.
 
-## What the smoke tests prove
+## What preflight and optional local smoke tests prove
 
 The environment preflight verifies archive safety, the complete schema-v2 file
 and symlink manifest, requirements-lock identity, candidate-runtime relocation,
 pinned imports and a freshly compiled native extension. It runs the interpreter
 inside the candidate `ComfyUI/`, never the active/full archive's runtime.
 
-The transactional-update smoke then uses `EnvironmentUpdater` itself to stage
+The optional local transactional-update smoke uses `EnvironmentUpdater` itself to stage
 that downloaded archive, run the candidate's version/import, `pip check` and
 ComfyUI quick tests, atomically swap the complete generation, start and
 health-check it, and retain the old generation for rollback. Sentinels under
 `models/`, `custom_nodes/`, `workflows/`, `user/`, `output/` and
 `custom_node_runtime/` must remain byte-identical, and the activated runtime
-must import a module installed in the persistent node venv. The workflow
-installs the same locked generation already present in the full archive, so
-this non-empty venv also proves a compatible manifest passes the ABI guard.
+must import a module installed in the persistent node venv. This local check is
+not part of the artifact-building workflow.
 
-The downloaded first-install smoke test runs without an NVIDIA GPU and uses
+The optional local first-install smoke test runs without an NVIDIA GPU and uses
 `--allow-no-gpu` solely to check:
 
 - complete-archive integrity and relocatable paths;

@@ -161,14 +161,11 @@ their documented host prerequisites.
   Large generation models are not shipped; only the small TAESD preview
   weights described above are bundled.
 
-The Actions smoke tests use both a real XCB window beneath Xvfb and an Ubuntu
-26.04 native-Wayland session beneath Weston's in-memory compositor. The latter
-unsets `DISPLAY` and asserts that no Xwayland process exists. Both validate the
-Qt WebEngine viewport through a smoke-only loopback DevTools capture. Together
-they prove packaging, a real transactional environment swap with
-persistent-data sentinels, rendered-window content, server ownership and
-shutdown without claiming GPU inference. GPU inference must additionally be
-tested on an R580+ NVIDIA host.
+The optional local smoke script can exercise XCB or native Wayland on a real
+desktop, but GitHub Actions does not emulate a display or launch the AppImage.
+GPU inference and rendered-window behavior must be tested after downloading the
+artifact on a supported host; CUDA inference additionally requires an R580+
+NVIDIA driver.
 
 ## Development
 
@@ -184,9 +181,10 @@ portable-comfy --root /tmp/Portable-Comfy --self-test
 ```
 
 Build scripts and artifact verification are documented in
-[Building and testing](docs/building.md). The fast `CI` workflow runs for pull
-requests and pushes. The multi-gigabyte CUDA build is deliberately manual via
-**Actions → Build portable artifacts → Run workflow**.
+[Building and testing](docs/building.md). The repository has one deliberately
+manual workflow: **Actions → Build portable artifacts → Run workflow**. It
+builds and non-interactively preflights the two archives, without GUI smoke jobs
+on hosted runners.
 
 ## License
 
