@@ -72,6 +72,8 @@ def make_bundle(
     identity_mismatch: bool = False,
     core_overrides: dict[str, str] | None = None,
     frontend_overrides: dict[str, str] | None = None,
+    frontend_inventory_overrides: dict[str, object] | None = None,
+    frontend_package_overrides: dict[str, object] | None = None,
     outer_version: str = "9.9.9",
     omitted_notice: str | None = None,
     unlicensed_package: str | None = None,
@@ -120,6 +122,43 @@ def make_bundle(
         "commit": "b" * 40,
         **(frontend_overrides or {}),
     }
+    frontend_notice_root = core / "frontend/LICENSES/npm/example-1.0.0"
+    frontend_notice_root.mkdir(parents=True)
+    (frontend_notice_root / "LICENSE").write_text(
+        "Example frontend dependency license\n", encoding="utf-8"
+    )
+    frontend_metadata = {
+        "name": "example-frontend-dependency",
+        "version": "1.0.0",
+        "license": "MIT",
+        "notice_files": ["example-1.0.0/LICENSE"],
+    }
+    (frontend_notice_root / "PACKAGE-METADATA.json").write_text(
+        json.dumps(frontend_metadata), encoding="utf-8"
+    )
+    frontend_package = {
+        **frontend_metadata,
+        "metadata_file": "example-1.0.0/PACKAGE-METADATA.json",
+        **(frontend_package_overrides or {}),
+    }
+    frontend_inventory = {
+        "schema_version": 1,
+        "frontend": frontend_identity,
+        "packages": [frontend_package],
+        "summary": {
+            "distributions": 1,
+            "with_notice_files": 1,
+            "metadata_only": 0,
+        },
+        **(frontend_inventory_overrides or {}),
+    }
+    (core / "frontend/LICENSES/npm/packages.json").write_text(
+        json.dumps(frontend_inventory),
+        encoding="utf-8",
+    )
+    (
+        core / f"frontend/SOURCE-ComfyUI-frontend-{frontend_identity['version']}.tar.gz"
+    ).write_bytes(b"pinned frontend source\n")
     license_root = core / "runtime/LICENSES/python-packages"
     packages = []
     for package_name in (
@@ -230,6 +269,213 @@ def make_bundle(
     with tarfile.open(archive, "w:gz") as output:
         output.add(outer, arcname=outer.name, recursive=True)
     return archive
+
+
+def split_bundle(tmp_path: Path, *, keep_archive: bool = False) -> Path:
+    archive = make_bundle(tmp_path)
+    canonical = tmp_path / "Portable-Comfy-core-v9.9.9.tar.gz"
+    archive.replace(canonical)
+    part_size = max(1, canonical.stat().st_size // 3)
+    command = [
+        "python3",
+        str(Path(__file__).resolve().parents[1] / "scripts/split_archive.py"),
+        str(canonical),
+        "--part-size",
+        str(part_size),
+    ]
+    if keep_archive:
+        command.append("--keep-archive")
+    result = subprocess.run(command, check=True, text=True, capture_output=True)
+    descriptor = Path(result.stdout.strip())
+    assert descriptor.is_file()
+    return descriptor
+
+
+@pytest.mark.parametrize("selection", ["descriptor", "first-part", "last-part"])
+def test_multipart_environment_update_accepts_descriptor_or_any_part(
+    portable_root: PortablePaths, tmp_path: Path, selection: str
+) -> None:
+    descriptor = split_bundle(tmp_path)
+    metadata = json.loads(descriptor.read_text(encoding="utf-8"))
+    assert metadata["format"] == "portable-comfy-core-multipart"
+    assert metadata["archive"]["filename"] == ("Portable-Comfy-core-v9.9.9.tar.gz")
+    assert len(metadata["parts"]) >= 3
+    assert not (tmp_path / metadata["archive"]["filename"]).exists()
+    reconstructed = b""
+    for expected_number, part in enumerate(metadata["parts"], start=1):
+        part_path = tmp_path / part["filename"]
+        payload = part_path.read_bytes()
+        assert part["number"] == expected_number
+        assert part["filename"].endswith(f".part{expected_number:04d}")
+        assert len(payload) == part["size"] <= metadata["part_size"]
+        assert hashlib.sha256(payload).hexdigest() == part["sha256"]
+        reconstructed += payload
+    assert len(reconstructed) == metadata["archive"]["size"]
+    assert hashlib.sha256(reconstructed).hexdigest() == metadata["archive"]["sha256"]
+    selected = descriptor
+    if selection == "first-part":
+        selected = tmp_path / metadata["parts"][0]["filename"]
+    elif selection == "last-part":
+        selected = tmp_path / metadata["parts"][-1]["filename"]
+
+    result = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(running=False),
+        command_runner=completed,  # type: ignore[arg-type]
+    ).install_bundle(selected)
+
+    assert result.version == "9.9.9"
+    assert (portable_root.comfyui / "new.txt").read_text() == "new payload\n"
+
+
+def test_multipart_rejects_missing_extra_and_corrupt_parts_before_stop(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    descriptor = split_bundle(tmp_path)
+    metadata = json.loads(descriptor.read_text(encoding="utf-8"))
+    first = tmp_path / metadata["parts"][0]["filename"]
+    last = tmp_path / metadata["parts"][-1]["filename"]
+    supervisor = FakeSupervisor()
+    updater = EnvironmentUpdater(
+        portable_root,
+        supervisor,
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+
+    saved = last.read_bytes()
+    last.unlink()
+    with pytest.raises(BundleValidationError, match="missing"):
+        updater.install_bundle(descriptor)
+    last.write_bytes(saved)
+
+    extra = tmp_path / f"{metadata['archive']['filename']}.part9999"
+    extra.write_bytes(b"unexpected")
+    with pytest.raises(BundleValidationError, match="unexpected"):
+        updater.install_bundle(first)
+    extra.unlink()
+
+    first.write_bytes(first.read_bytes()[:-1] + b"X")
+    with pytest.raises(BundleValidationError, match="checksum"):
+        updater.install_bundle(descriptor)
+    assert supervisor.stops == 0
+
+
+def test_multipart_rejects_wrong_reconstructed_archive_digest(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    descriptor = split_bundle(tmp_path)
+    metadata = json.loads(descriptor.read_text(encoding="utf-8"))
+    first = tmp_path / metadata["parts"][0]["filename"]
+    changed = first.read_bytes()[:-1] + b"X"
+    first.write_bytes(changed)
+    metadata["parts"][0]["sha256"] = hashlib.sha256(changed).hexdigest()
+    descriptor.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(BundleValidationError, match="reconstructed Core archive"):
+        EnvironmentUpdater(
+            portable_root,
+            FakeSupervisor(),
+            command_runner=completed,  # type: ignore[arg-type]
+        ).install_bundle(descriptor)
+
+
+def test_multipart_rejects_descriptor_tampering_before_writing_environment(
+    portable_root: PortablePaths, tmp_path: Path
+) -> None:
+    descriptor = split_bundle(tmp_path)
+    metadata = json.loads(descriptor.read_text(encoding="utf-8"))
+    metadata["parts"][0]["filename"] = "../escape"
+    descriptor.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(BundleValidationError, match="invalid order or metadata"):
+        EnvironmentUpdater(
+            portable_root,
+            FakeSupervisor(),
+            command_runner=completed,  # type: ignore[arg-type]
+        ).install_bundle(descriptor)
+    assert not (tmp_path.parent / "escape").exists()
+
+
+def test_first_environment_install_starts_from_standalone_bootstrap(
+    tmp_path: Path,
+) -> None:
+    paths = PortablePaths(tmp_path / "standalone")
+    paths.create_layout()
+    persistent = paths.models_cache / "bootstrap-sentinel"
+    persistent.parent.mkdir(parents=True, exist_ok=True)
+    persistent.write_text("persistent\n", encoding="utf-8")
+    supervisor = FakeSupervisor(running=False)
+
+    result = EnvironmentUpdater(
+        paths,
+        supervisor,
+        command_runner=completed,  # type: ignore[arg-type]
+    ).install_bundle(make_bundle(tmp_path))
+
+    assert result.version == "9.9.9" and not result.restarted
+    assert (paths.comfyui / "new.txt").read_text() == "new payload\n"
+    assert paths.environment_manifest.is_file()
+    assert paths.environment_checksums.is_file()
+    assert persistent.read_text() == "persistent\n"
+    assert not list((paths.state / "rollback").glob("ComfyUI-*"))
+    assert supervisor.starts == 1 and not supervisor.running
+    assert not (paths.state / TRANSACTION_MARKER).exists()
+
+
+def test_failed_first_environment_install_rolls_back_to_bootstrap(
+    tmp_path: Path,
+) -> None:
+    paths = PortablePaths(tmp_path / "standalone")
+    paths.create_layout()
+    supervisor = FakeSupervisor(running=False, fail_starts=1)
+
+    with pytest.raises(UpdateError, match="rolled back"):
+        EnvironmentUpdater(
+            paths,
+            supervisor,
+            command_runner=completed,  # type: ignore[arg-type]
+        ).install_bundle(make_bundle(tmp_path))
+
+    assert not paths.comfyui.exists()
+    assert not paths.environment_manifest.exists()
+    assert not paths.environment_checksums.exists()
+    assert not list((paths.state / "rollback").glob("ComfyUI-*"))
+    assert not (paths.state / TRANSACTION_MARKER).exists()
+
+
+@pytest.mark.parametrize("candidate_active", [False, True])
+def test_startup_recovers_interrupted_first_install_to_bootstrap(
+    tmp_path: Path, candidate_active: bool
+) -> None:
+    paths = PortablePaths(tmp_path / "standalone")
+    paths.create_layout()
+    if candidate_active:
+        paths.comfyui.mkdir()
+        (paths.comfyui / "uncommitted.txt").write_text("candidate\n", encoding="utf-8")
+        paths.environment_manifest.write_text("candidate\n", encoding="utf-8")
+        paths.environment_checksums.write_text("candidate\n", encoding="utf-8")
+    transaction = paths.state / "transactions/first-install"
+    transaction.mkdir(parents=True)
+    backup = paths.state / "rollback/ComfyUI-first-install"
+    journal = {
+        "schema_version": 2,
+        "transaction_id": "first-install",
+        "phase": "candidate_active" if candidate_active else "old_absent",
+        "backup": backup.relative_to(paths.root).as_posix(),
+        "transaction": transaction.relative_to(paths.root).as_posix(),
+        "had_active_environment": False,
+        "had_environment_manifest": False,
+        "had_environment_checksums": False,
+    }
+    (paths.state / TRANSACTION_MARKER).write_text(json.dumps(journal), encoding="utf-8")
+
+    assert EnvironmentUpdater.recover_interrupted_update(paths) is True
+    assert not paths.comfyui.exists()
+    assert not paths.environment_manifest.exists()
+    assert not paths.environment_checksums.exists()
+    assert not (paths.state / TRANSACTION_MARKER).exists()
+    recovered = list((paths.state / "recovered").glob("uncommitted-ComfyUI-*"))
+    assert bool(recovered) is candidate_active
 
 
 def test_complete_environment_update_preserves_every_persistent_area(
@@ -450,6 +696,83 @@ def test_complete_core_bundle_requires_redistribution_notices(
         updater.install_bundle(make_bundle(tmp_path, omitted_notice=notice))
 
 
+@pytest.mark.parametrize(
+    ("omitted_path", "message"),
+    [
+        (
+            "frontend/LICENSES/npm/packages.json",
+            "frontend dependency license inventory is missing or empty",
+        ),
+        (
+            "frontend/SOURCE-ComfyUI-frontend-8.8.8.tar.gz",
+            "pinned frontend source snapshot is missing or empty",
+        ),
+    ],
+)
+def test_complete_core_bundle_requires_frontend_inventory_and_source(
+    portable_root: PortablePaths,
+    tmp_path: Path,
+    omitted_path: str,
+    message: str,
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match=message):
+        updater.install_bundle(make_bundle(tmp_path, omitted_notice=omitted_path))
+
+
+@pytest.mark.parametrize(
+    ("inventory_overrides", "package_overrides", "message"),
+    [
+        (
+            {"frontend": {"version": "8.8.7", "commit": "b" * 40}},
+            {},
+            "unsupported schema",
+        ),
+        (
+            {
+                "summary": {
+                    "distributions": 1,
+                    "with_notice_files": 0,
+                    "metadata_only": 1,
+                }
+            },
+            {},
+            "not comprehensive",
+        ),
+        ({}, {"metadata_file": "../PACKAGE-METADATA.json"}, "unsafe path"),
+        (
+            {},
+            {"notice_files": ["example-1.0.0/MISSING-LICENSE"]},
+            "notice is missing or empty",
+        ),
+    ],
+)
+def test_frontend_dependency_inventory_is_deeply_validated(
+    portable_root: PortablePaths,
+    tmp_path: Path,
+    inventory_overrides: dict[str, object],
+    package_overrides: dict[str, object],
+    message: str,
+) -> None:
+    updater = EnvironmentUpdater(
+        portable_root,
+        FakeSupervisor(),
+        command_runner=completed,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BundleValidationError, match=message):
+        updater.install_bundle(
+            make_bundle(
+                tmp_path,
+                frontend_inventory_overrides=inventory_overrides,
+                frontend_package_overrides=package_overrides,
+            )
+        )
+
+
 def test_every_runtime_package_requires_a_bundled_license_file(
     portable_root: PortablePaths, tmp_path: Path
 ) -> None:
@@ -614,6 +937,113 @@ def test_startup_recovers_power_loss_during_generation_swap(
     assert paths.environment_manifest.read_bytes() == old_manifest
     assert paths.environment_checksums.read_bytes() == old_checksums
     assert not (paths.state / TRANSACTION_MARKER).exists()
+
+
+def test_startup_removes_only_owned_stale_preflight_stages(
+    portable_root: PortablePaths,
+) -> None:
+    updates = portable_root.state / "updates"
+    stale = updates / f"environment-stage-{'a' * 32}"
+    stale.mkdir(parents=True)
+    (stale / "reconstructed-core.tar.gz").write_bytes(b"large partial payload")
+    unrelated = updates / "environment-stage-user-backup"
+    unrelated.mkdir()
+    (unrelated / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    assert EnvironmentUpdater.recover_interrupted_update(portable_root) is False
+    assert not stale.exists()
+    assert (unrelated / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+
+
+def test_startup_recovers_power_loss_after_old_environment_was_restored(
+    portable_root: PortablePaths,
+) -> None:
+    paths = portable_root
+    (paths.comfyui / "old.txt").write_text("restored old\n", encoding="utf-8")
+    transaction = paths.state / "transactions/rollback-interrupted"
+    transaction.mkdir(parents=True)
+    old_manifest = b'{"restored": true}\n'
+    old_checksums = b"restored checksums\n"
+    (transaction / "environment.json").write_bytes(old_manifest)
+    (transaction / "environment-checksums.sha256").write_bytes(old_checksums)
+    paths.environment_manifest.write_text('{"candidate": true}\n', encoding="utf-8")
+    paths.environment_checksums.write_text("candidate checksums\n", encoding="utf-8")
+    backup = paths.state / "rollback/ComfyUI-rollback-interrupted"
+    journal = {
+        "schema_version": 2,
+        "transaction_id": "rollback-interrupted",
+        "phase": "rollback_started",
+        "backup": backup.relative_to(paths.root).as_posix(),
+        "transaction": transaction.relative_to(paths.root).as_posix(),
+        "had_active_environment": True,
+        "had_environment_manifest": True,
+        "had_environment_checksums": True,
+    }
+    marker = paths.state / TRANSACTION_MARKER
+    marker.write_text(json.dumps(journal), encoding="utf-8")
+
+    assert EnvironmentUpdater.recover_interrupted_update(paths) is True
+    assert (paths.comfyui / "old.txt").read_text() == "restored old\n"
+    assert paths.environment_manifest.read_bytes() == old_manifest
+    assert paths.environment_checksums.read_bytes() == old_checksums
+    assert not marker.exists()
+    assert not transaction.exists()
+
+
+def test_startup_recovery_is_repeatable_after_consuming_backup(
+    portable_root: PortablePaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = portable_root
+    (paths.comfyui / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+    backup = paths.state / "rollback/ComfyUI-repeatable-recovery"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.mkdir()
+    (backup / "old.txt").write_text("trusted old\n", encoding="utf-8")
+    transaction = paths.state / "transactions/repeatable-recovery"
+    transaction.mkdir(parents=True)
+    old_manifest = b'{"trusted": true}\n'
+    old_checksums = b"trusted checksums\n"
+    (transaction / "environment.json").write_bytes(old_manifest)
+    (transaction / "environment-checksums.sha256").write_bytes(old_checksums)
+    journal = {
+        "schema_version": 2,
+        "transaction_id": "repeatable-recovery",
+        "phase": "candidate_active",
+        "backup": backup.relative_to(paths.root).as_posix(),
+        "transaction": transaction.relative_to(paths.root).as_posix(),
+        "had_active_environment": True,
+        "had_environment_manifest": True,
+        "had_environment_checksums": True,
+    }
+    marker = paths.state / TRANSACTION_MARKER
+    marker.write_text(json.dumps(journal), encoding="utf-8")
+
+    def interrupted_metadata_restore(
+        _cls: type[EnvironmentUpdater],
+        _paths: PortablePaths,
+        _transaction: Path,
+        _journal: dict[str, object],
+    ) -> None:
+        raise UpdateError("simulated power loss after backup activation")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            EnvironmentUpdater,
+            "_restore_journal_metadata",
+            classmethod(interrupted_metadata_restore),
+        )
+        with pytest.raises(UpdateError, match="simulated power loss"):
+            EnvironmentUpdater.recover_interrupted_update(paths)
+
+    persisted = json.loads(marker.read_text(encoding="utf-8"))
+    assert persisted["phase"] == "rollback_started"
+    assert not backup.exists()
+    assert (paths.comfyui / "old.txt").read_text() == "trusted old\n"
+
+    assert EnvironmentUpdater.recover_interrupted_update(paths) is True
+    assert paths.environment_manifest.read_bytes() == old_manifest
+    assert paths.environment_checksums.read_bytes() == old_checksums
+    assert not marker.exists()
 
 
 def test_startup_recovery_rejects_journal_path_escape(

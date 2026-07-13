@@ -5,6 +5,11 @@ replaceable ComfyUI environment generation, and persistent user/node state.
 That boundary permits Python and Torch updates without redownloading models or
 silently deleting custom nodes.
 
+The launcher archive contains the AppImage and persistent directory skeleton,
+but no `ComfyUI/` environment. A first-run launcher is therefore useful on its
+own as an installer: the user selects a complete Core bundle, and only then can
+the server start. Launcher and Core releases can be replaced independently.
+
 ## Runtime and process model
 
 The AppImage contains the frozen `portable_comfy` launcher and its Qt WebEngine
@@ -37,7 +42,9 @@ ComfyUI/
 ├── main.py and pinned Core source
 ├── PORTABLE-COMFY-IDENTITY.json  # visible exact version identity
 ├── LICENSE                       # pinned Core license
-├── frontend/                     # matching compiled frontend + notices
+├── frontend/                     # matching compiled frontend
+│   ├── SOURCE-ComfyUI-frontend-<version>.tar.gz
+│   └── LICENSES/npm/             # production dependency notices + inventory
 └── runtime/
     ├── python/                   # source-built CPython + locked packages
     │   └── LICENSE.txt           # upstream PSF license beside CPython
@@ -84,7 +91,7 @@ the expected directory; it must not overwrite unrelated user content.
 
 ## Full Core bundle contract
 
-An update archive has one outer directory named
+The reconstructed update archive has one outer directory named
 `Portable-Comfy-core-v<version>/`. It may contain only:
 
 ```text
@@ -113,6 +120,21 @@ checksum, identity or lock mismatch. Persistent names such as `models/`,
 `custom_nodes/`, `workflows/` and `user/` are therefore impossible to smuggle
 into a valid update bundle.
 
+The verifier also requires the frontend source archive to match the pinned
+frontend version and requires every package in the filtered production pnpm
+closure to have a nonempty, manifested notice. Dependencies embedded directly
+in compiled JavaScript or font assets are recorded separately with exact asset
+hashes and notices. Runtime wheels have the same all-packages-noticed invariant
+under `runtime/LICENSES/python-packages/`.
+
+For transport, the logical `.tar.gz` is split into ordered files of at most
+1.9 GB plus a JSON descriptor. The descriptor binds the logical archive name,
+size and SHA-256 as well as each part's number, exact filename, size and SHA-256.
+Selecting either the descriptor or any part discovers the complete sibling set;
+all parts and the reconstructed archive are verified before archive parsing or
+transactional staging begins. This keeps every future GitHub Release asset below
+the 2 GB per-file limit without weakening the existing archive contract.
+
 Installation is transactional:
 
 1. Safely extract and validate the complete candidate before changing the
@@ -121,24 +143,26 @@ Installation is transactional:
    Core preflight checks with `ComfyUI/runtime/python/bin/python-portable` from
    that candidate.
 3. Stop the owned server, durably write and fsync an activation journal, then
-   atomically move the current `ComfyUI/` generation aside.
+   atomically move the current `ComfyUI/` generation aside when one exists.
 4. Atomically activate the candidate directory and its environment manifest.
 5. Launch and health-check the candidate. Commit only after success; otherwise
    restore the previous complete generation and restart it.
 
 After an interrupted activation, the next startup acquires the instance lock
-and recovers from that journal before normal server startup. It restores the
-rollback environment and manifest files, while moving an uncommitted candidate
-to `state/recovered/` instead of deleting it.
+and recovers from that journal before normal server startup. An update restores
+the rollback environment and manifest files. An interrupted first installation
+returns to the valid launcher-only state. In either case an uncommitted candidate
+is moved to `state/recovered/` instead of being trusted or silently deleted.
 
-The AppImage is outside this transaction. A launcher/UI update still requires
-a new complete first-install package; a full-Core update may change Core,
+The AppImage is outside this transaction. A launcher/UI update requires only a
+new standalone launcher package; a full-Core update may change Core,
 frontend, Python, Torch/CUDA and locked Core requirements together. The
 manifest retains `bundle_type: environment` as the stable schema-v2 identity;
 that internal field does not make the public Core artifact source-only.
 
-The first-install archive's top-level `LICENSES/` directory indexes the
-notices inside the environment and frozen launcher. Launcher package notices
+The standalone launcher's top-level `LICENSES/` directory indexes its frozen
+launcher notices. Core/runtime notices stay inside the separately installed
+environment. Launcher package notices
 cover PyWebView, PyInstaller, PyQt/Qt WebEngine and Chromium. Native Wayland,
 PulseAudio, XCB and XKB libraries copied from the Ubuntu build host are not a
 hand-maintained license subset: the build parses PyInstaller's final

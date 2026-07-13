@@ -32,16 +32,33 @@ VERSION = re.compile(
 FROZEN_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^=\s]+)$")
 DISTRIBUTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 GENERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
+UPDATE_STAGE_NAME = re.compile(r"^environment-stage-[0-9a-f]{32}$")
 # "Core bundle" is the public artifact name. It always means the complete,
 # self-contained ComfyUI/ generation: Core source, matching frontend, private
 # Python, Torch/CUDA and every locked Core dependency.
 ARCHIVE_ROOT = re.compile(r"^Portable-Comfy-core-[A-Za-z0-9._+-]+$")
+CORE_ARCHIVE_NAME = re.compile(
+    r"^Portable-Comfy-core-v[0-9]+(?:\.[0-9]+){2}"
+    r"(?:[-+._]?[0-9A-Za-z][0-9A-Za-z._+-]{0,63})?\.tar\.gz$"
+)
+MULTIPART_PART_NAME = re.compile(
+    r"^(Portable-Comfy-core-v[0-9]+(?:\.[0-9]+){2}"
+    r"(?:[-+._]?[0-9A-Za-z][0-9A-Za-z._+-]{0,63})?\.tar\.gz)"
+    r"\.part([0-9]{4})$"
+)
+MULTIPART_FORMAT = "portable-comfy-core-multipart"
+MULTIPART_SCHEMA_VERSION = 1
+MAX_MULTIPART_PART_BYTES = 1_900_000_000
+MAX_MULTIPART_PARTS = 64
+MAX_MULTIPART_DESCRIPTOR_BYTES = 1024 * 1024
+MAX_ARCHIVE_BYTES = 10_000_000_000
 MAX_MEMBERS = 500_000
 MAX_UNPACKED_BYTES = 32 * 1024**3
 TRANSACTION_MARKER = "environment-update-transaction.json"
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
 RUNTIME_INSTALLED_REQUIREMENTS = "ComfyUI/runtime/installed-requirements.txt"
+FRONTEND_LICENSE_INVENTORY = "ComfyUI/frontend/LICENSES/npm/packages.json"
 REQUIRED_LICENSE_FILES = (
     "ComfyUI/LICENSE",
     "ComfyUI/frontend/LICENSE",
@@ -125,6 +142,15 @@ def _digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def _archive_path(name: str) -> PurePosixPath:
     while name.startswith("./"):
         name = name[2:]
@@ -188,6 +214,7 @@ class EnvironmentUpdater:
     def recover_interrupted_update(cls, paths: PortablePaths) -> bool:
         """Restore the previous complete generation after an interrupted swap."""
 
+        cls._cleanup_stale_update_stages(paths)
         marker = paths.state / TRANSACTION_MARKER
         if not marker.exists():
             return False
@@ -204,8 +231,39 @@ class EnvironmentUpdater:
         transaction = cls._journal_path(
             paths, journal, "transaction", paths.state / "transactions"
         )
+        phase = journal.get("phase")
+        if phase not in {
+            "prepared",
+            "old_absent",
+            "old_moved",
+            "candidate_active",
+            "rollback_started",
+        }:
+            raise UpdateError("interrupted-update journal has an invalid phase")
+        had_active_environment = journal.get("had_active_environment")
+        if had_active_environment is None:
+            # Journals written before standalone bootstrap support always had an
+            # active environment and can be identified by their saved manifest.
+            had_active_environment = journal.get("had_environment_manifest")
+        if not isinstance(had_active_environment, bool):
+            raise UpdateError(
+                "interrupted-update journal is missing active-environment state"
+            )
         restored = False
         if backup.is_dir():
+            if not had_active_environment:
+                raise UpdateError(
+                    "first-install journal unexpectedly contains an environment backup"
+                )
+            # Recovery is itself a transaction. Persist rollback intent before
+            # consuming the only backup so a second startup can trust the old
+            # generation after backup -> ComfyUI even if metadata restoration
+            # or journal cleanup is interrupted.
+            journal["phase"] = "rollback_started"
+            cls._atomic_bytes(
+                marker,
+                (json.dumps(journal, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            )
             recovered_root = paths.state / "recovered"
             recovered_root.mkdir(parents=True, exist_ok=True)
             if paths.comfyui.exists():
@@ -216,7 +274,25 @@ class EnvironmentUpdater:
             cls._fsync_directory(backup.parent)
             cls._restore_journal_metadata(paths, transaction, journal)
             restored = True
-        elif not paths.comfyui.is_dir():
+        elif not had_active_environment:
+            # A failed or interrupted first installation rolls back to the valid
+            # bootstrap state: no active ComfyUI generation. Preserve any
+            # uncommitted candidate for diagnosis instead of silently trusting it.
+            if paths.comfyui.exists():
+                recovered_root = paths.state / "recovered"
+                recovered_root.mkdir(parents=True, exist_ok=True)
+                failed = recovered_root / f"uncommitted-ComfyUI-{uuid.uuid4().hex[:12]}"
+                paths.comfyui.replace(failed)
+                cls._fsync_directory(paths.root)
+            cls._restore_journal_metadata(paths, transaction, journal)
+            restored = True
+        elif phase in {"prepared", "rollback_started"} and paths.comfyui.is_dir():
+            # Either the old environment had not moved, or rollback had already
+            # moved it back before power was lost. In both cases the active tree
+            # is the trusted old generation described by transaction metadata.
+            cls._restore_journal_metadata(paths, transaction, journal)
+            restored = phase == "rollback_started"
+        else:
             raise UpdateError(
                 "an interrupted full-Core update left neither an active generation "
                 f"nor its rollback; inspect {transaction}"
@@ -226,8 +302,36 @@ class EnvironmentUpdater:
         shutil.rmtree(transaction, ignore_errors=True)
         return restored
 
+    @classmethod
+    def _cleanup_stale_update_stages(cls, paths: PortablePaths) -> None:
+        """Remove app-owned preflight trees left before a journal was created."""
+
+        update_root = paths.state / "updates"
+        if not update_root.is_dir() or update_root.is_symlink():
+            return
+        changed = False
+        try:
+            for candidate in update_root.iterdir():
+                if not UPDATE_STAGE_NAME.fullmatch(candidate.name):
+                    continue
+                if candidate.is_symlink() or not candidate.is_dir():
+                    candidate.unlink(missing_ok=True)
+                else:
+                    shutil.rmtree(candidate)
+                changed = True
+        except OSError as error:
+            raise UpdateError(
+                f"cannot remove stale environment update stage: {error}"
+            ) from error
+        if changed:
+            cls._fsync_directory(update_root)
+
     def install_bundle(self, archive: str | os.PathLike[str]) -> UpdateResult:
-        """Validate, preflight with candidate Python, swap, and health-check."""
+        """Validate, preflight with candidate Python, swap, and health-check.
+
+        ``archive`` may be the complete ``.tar.gz``, its multipart descriptor,
+        or any one of the descriptor's sibling ``.partNNNN`` files.
+        """
 
         source = Path(archive).expanduser().resolve()
         if not source.is_file():
@@ -242,12 +346,247 @@ class EnvironmentUpdater:
             stage = update_root / f"environment-stage-{uuid.uuid4().hex}"
             stage.mkdir()
             try:
-                bundle = self._extract_and_validate(source, stage)
+                materialized = self._materialize_archive(source, stage)
+                bundle = self._extract_and_validate(materialized, stage)
                 self._check_node_runtime_abi(bundle.manifest["runtime"])
                 self._preflight(bundle)
                 return self._activate(bundle)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
+
+    @staticmethod
+    def _materialize_archive(source: Path, stage: Path) -> Path:
+        """Return a complete archive, reconstructing a verified part set."""
+
+        part_match = MULTIPART_PART_NAME.fullmatch(source.name)
+        if source.name.endswith(".parts.json"):
+            descriptor = source
+            selected_part: str | None = None
+        elif part_match is not None:
+            archive_name = part_match.group(1)
+            descriptor = source.with_name(f"{archive_name}.parts.json")
+            selected_part = source.name
+        else:
+            return source
+
+        if not descriptor.is_file():
+            raise BundleValidationError(
+                f"multipart descriptor is missing: {descriptor.name}"
+            )
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor_fd = os.open(descriptor, flags)
+            with os.fdopen(descriptor_fd, "rb") as stream:
+                descriptor_stat = os.fstat(stream.fileno())
+                if not stat.S_ISREG(descriptor_stat.st_mode):
+                    raise BundleValidationError(
+                        "multipart descriptor is not a regular file"
+                    )
+                descriptor_size = descriptor_stat.st_size
+                descriptor_bytes = stream.read(MAX_MULTIPART_DESCRIPTOR_BYTES + 1)
+            if not 1 <= descriptor_size <= MAX_MULTIPART_DESCRIPTOR_BYTES:
+                raise BundleValidationError(
+                    "multipart descriptor is empty or exceeds its size limit"
+                )
+            document = json.loads(
+                descriptor_bytes.decode("utf-8"),
+                object_pairs_hook=_strict_json_object,
+            )
+        except BundleValidationError:
+            raise
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise BundleValidationError(
+                f"cannot read multipart descriptor: {error}"
+            ) from error
+
+        archive_name, archive_size, archive_sha256, parts = (
+            EnvironmentUpdater._validate_multipart_descriptor(document, descriptor.name)
+        )
+        expected_names = {part["filename"] for part in parts}
+        if selected_part is not None and selected_part not in expected_names:
+            raise BundleValidationError(
+                "selected part is not listed by its multipart descriptor"
+            )
+
+        prefix = f"{archive_name}.part"
+        try:
+            actual_names = {
+                candidate.name
+                for candidate in descriptor.parent.iterdir()
+                if candidate.name.startswith(prefix)
+                and candidate.name != descriptor.name
+            }
+        except OSError as error:
+            raise BundleValidationError(
+                f"cannot inspect multipart bundle directory: {error}"
+            ) from error
+        if actual_names != expected_names:
+            missing = sorted(expected_names - actual_names)
+            unexpected = sorted(actual_names - expected_names)
+            details: list[str] = []
+            if missing:
+                details.append(f"missing: {', '.join(missing)}")
+            if unexpected:
+                details.append(f"unexpected: {', '.join(unexpected)}")
+            raise BundleValidationError(
+                "multipart part set does not exactly match the descriptor"
+                + (f" ({'; '.join(details)})" if details else "")
+            )
+
+        reconstructed_dir = stage / "reconstructed"
+        reconstructed_dir.mkdir()
+        reconstructed = reconstructed_dir / archive_name
+        full_digest = hashlib.sha256()
+        total_written = 0
+        try:
+            with reconstructed.open("xb") as output:
+                for part in parts:
+                    part_path = descriptor.parent / str(part["filename"])
+                    part_digest = hashlib.sha256()
+                    part_written = 0
+                    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                    flags |= getattr(os, "O_NOFOLLOW", 0)
+                    part_fd = os.open(part_path, flags)
+                    with os.fdopen(part_fd, "rb") as stream:
+                        file_stat = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(file_stat.st_mode):
+                            raise BundleValidationError(
+                                "multipart part is not a regular file: "
+                                f"{part_path.name}"
+                            )
+                        if file_stat.st_size != part["size"]:
+                            raise BundleValidationError(
+                                f"multipart part size mismatch: {part_path.name}"
+                            )
+                        remaining = int(part["size"])
+                        while remaining:
+                            block = stream.read(min(8 * 1024 * 1024, remaining))
+                            if not block:
+                                break
+                            output.write(block)
+                            part_digest.update(block)
+                            full_digest.update(block)
+                            part_written += len(block)
+                            total_written += len(block)
+                            remaining -= len(block)
+                        if stream.read(1):
+                            raise BundleValidationError(
+                                f"multipart part grew while reading: {part_path.name}"
+                            )
+                    if (
+                        part_written != part["size"]
+                        or part_digest.hexdigest() != part["sha256"]
+                    ):
+                        raise BundleValidationError(
+                            f"multipart part checksum mismatch: {part_path.name}"
+                        )
+                output.flush()
+                os.fsync(output.fileno())
+        except BundleValidationError:
+            reconstructed.unlink(missing_ok=True)
+            raise
+        except OSError as error:
+            reconstructed.unlink(missing_ok=True)
+            raise BundleValidationError(
+                f"cannot reconstruct multipart Core archive: {error}"
+            ) from error
+
+        if total_written != archive_size or full_digest.hexdigest() != archive_sha256:
+            reconstructed.unlink(missing_ok=True)
+            raise BundleValidationError(
+                "reconstructed Core archive size or checksum does not match descriptor"
+            )
+        return reconstructed
+
+    @staticmethod
+    def _validate_multipart_descriptor(
+        document: Any, descriptor_name: str
+    ) -> tuple[str, int, str, list[dict[str, Any]]]:
+        """Validate descriptor identity, deterministic order, names, and sizes."""
+
+        if not isinstance(document, dict) or set(document) != {
+            "schema_version",
+            "format",
+            "archive",
+            "part_size",
+            "parts",
+        }:
+            raise BundleValidationError("multipart descriptor fields are malformed")
+        if (
+            document.get("schema_version") != MULTIPART_SCHEMA_VERSION
+            or document.get("format") != MULTIPART_FORMAT
+        ):
+            raise BundleValidationError("unsupported multipart descriptor format")
+
+        archive = document.get("archive")
+        if not isinstance(archive, dict) or set(archive) != {
+            "filename",
+            "size",
+            "sha256",
+        }:
+            raise BundleValidationError("multipart archive identity is malformed")
+        archive_name = archive.get("filename")
+        archive_size = archive.get("size")
+        archive_sha256 = archive.get("sha256")
+        if (
+            not isinstance(archive_name, str)
+            or not CORE_ARCHIVE_NAME.fullmatch(archive_name)
+            or descriptor_name != f"{archive_name}.parts.json"
+            or not isinstance(archive_size, int)
+            or isinstance(archive_size, bool)
+            or not 1 <= archive_size <= MAX_ARCHIVE_BYTES
+            or not isinstance(archive_sha256, str)
+            or not SHA256.fullmatch(archive_sha256)
+        ):
+            raise BundleValidationError(
+                "multipart archive filename, size, or checksum is malformed"
+            )
+
+        part_size = document.get("part_size")
+        parts = document.get("parts")
+        if (
+            not isinstance(part_size, int)
+            or isinstance(part_size, bool)
+            or not 1 <= part_size <= MAX_MULTIPART_PART_BYTES
+            or not isinstance(parts, list)
+            or not 1 <= len(parts) <= MAX_MULTIPART_PARTS
+        ):
+            raise BundleValidationError("multipart part size or count is malformed")
+
+        total_size = 0
+        checked_parts: list[dict[str, Any]] = []
+        for expected_number, part in enumerate(parts, start=1):
+            expected_name = f"{archive_name}.part{expected_number:04d}"
+            if not isinstance(part, dict) or set(part) != {
+                "number",
+                "filename",
+                "size",
+                "sha256",
+            }:
+                raise BundleValidationError("multipart part entry is malformed")
+            size = part.get("size")
+            checksum = part.get("sha256")
+            if (
+                part.get("number") != expected_number
+                or part.get("filename") != expected_name
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or not 1 <= size <= part_size
+                or (expected_number < len(parts) and size != part_size)
+                or not isinstance(checksum, str)
+                or not SHA256.fullmatch(checksum)
+            ):
+                raise BundleValidationError(
+                    f"multipart part {expected_number} has invalid order or metadata"
+                )
+            total_size += size
+            checked_parts.append(part)
+        if total_size != archive_size:
+            raise BundleValidationError(
+                "multipart part sizes do not equal the declared archive size"
+            )
+        return archive_name, archive_size, archive_sha256, checked_parts
 
     def _check_node_runtime_abi(self, candidate: dict[str, Any]) -> None:
         """Do not silently carry compiled node packages across runtime ABIs."""
@@ -559,6 +898,7 @@ class EnvironmentUpdater:
             raise BundleValidationError(
                 "installed runtime requirements freeze is missing or empty"
             )
+        EnvironmentUpdater._validate_frontend_license_inventory(root, regular, frontend)
         EnvironmentUpdater._validate_runtime_license_inventory(root, regular)
 
         identity_path = root / "ComfyUI" / IDENTITY_NAME
@@ -605,6 +945,171 @@ class EnvironmentUpdater:
         ):
             raise BundleValidationError(
                 "runtime requirements lock does not match manifest"
+            )
+
+    @staticmethod
+    def _validate_frontend_license_inventory(
+        root: Path,
+        regular: dict[str, tuple[str, int]],
+        frontend: dict[str, Any],
+    ) -> None:
+        inventory_entry = regular.get(FRONTEND_LICENSE_INVENTORY)
+        if inventory_entry is None or inventory_entry[1] <= 0:
+            raise BundleValidationError(
+                "frontend dependency license inventory is missing or empty"
+            )
+        inventory_path = root / FRONTEND_LICENSE_INVENTORY
+        try:
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise BundleValidationError(
+                f"invalid frontend dependency license inventory: {error}"
+            ) from error
+        packages = inventory.get("packages") if isinstance(inventory, dict) else None
+        if (
+            not isinstance(inventory, dict)
+            or inventory.get("schema_version") != 1
+            or inventory.get("frontend") != frontend
+            or not isinstance(packages, list)
+            or not packages
+        ):
+            raise BundleValidationError(
+                "frontend dependency license inventory has an unsupported schema"
+            )
+
+        with_notices = sum(
+            isinstance(package, dict) and bool(package.get("notice_files"))
+            for package in packages
+        )
+        summary = {
+            "distributions": len(packages),
+            "with_notice_files": with_notices,
+            "metadata_only": len(packages) - with_notices,
+        }
+        if inventory.get("summary") != summary or with_notices != len(packages):
+            raise BundleValidationError(
+                "frontend dependency license inventory is not comprehensive"
+            )
+
+        inventory_parent = PurePosixPath(FRONTEND_LICENSE_INVENTORY).parent
+        seen: set[tuple[str, str]] = set()
+        for package in packages:
+            if not isinstance(package, dict):
+                raise BundleValidationError(
+                    "frontend dependency license inventory contains a malformed package"
+                )
+            name = package.get("name")
+            version = package.get("version")
+            expression = package.get("license")
+            metadata_file = package.get("metadata_file")
+            notice_files = package.get("notice_files")
+            if (
+                not isinstance(name, str)
+                or not name
+                or "\\" in name
+                or "\x00" in name
+                or not isinstance(version, str)
+                or not version
+                or any(character.isspace() for character in version)
+                or not isinstance(expression, str)
+                or not expression.strip()
+                or not isinstance(metadata_file, str)
+                or not isinstance(notice_files, list)
+            ):
+                raise BundleValidationError(
+                    "frontend dependency license inventory contains malformed fields"
+                )
+            identity = (name, version)
+            if identity in seen:
+                raise BundleValidationError(
+                    f"frontend dependency license inventory has a duplicate: {name}"
+                )
+            seen.add(identity)
+            for relative_text in [metadata_file, *notice_files]:
+                if not isinstance(relative_text, str):
+                    raise BundleValidationError(
+                        "frontend dependency license inventory has a malformed path"
+                    )
+                relative = PurePosixPath(relative_text)
+                if (
+                    relative.is_absolute()
+                    or not relative.parts
+                    or ".." in relative.parts
+                    or "\\" in relative_text
+                    or "\x00" in relative_text
+                    or relative.as_posix() != relative_text
+                ):
+                    raise BundleValidationError(
+                        "frontend dependency license inventory has an unsafe path"
+                    )
+                payload_path = (inventory_parent / relative).as_posix()
+                entry = regular.get(payload_path)
+                if entry is None or entry[1] <= 0:
+                    raise BundleValidationError(
+                        "frontend dependency notice is missing or empty: "
+                        f"{payload_path}"
+                    )
+
+            bundled_assets = package.get("bundled_assets")
+            if bundled_assets is not None:
+                if not isinstance(bundled_assets, list) or not bundled_assets:
+                    raise BundleValidationError(
+                        "frontend bundled-asset inventory is malformed"
+                    )
+                for asset in bundled_assets:
+                    if not isinstance(asset, dict) or set(asset) != {
+                        "path",
+                        "sha256",
+                        "size",
+                    }:
+                        raise BundleValidationError(
+                            "frontend bundled-asset inventory is malformed"
+                        )
+                    asset_path = asset.get("path")
+                    asset_sha256 = asset.get("sha256")
+                    asset_size = asset.get("size")
+                    if not isinstance(asset_path, str):
+                        raise BundleValidationError(
+                            "frontend bundled-asset path is malformed"
+                        )
+                    relative = PurePosixPath(asset_path)
+                    if (
+                        relative.is_absolute()
+                        or not relative.parts
+                        or ".." in relative.parts
+                        or "\\" in asset_path
+                        or "\x00" in asset_path
+                        or relative.as_posix() != asset_path
+                        or not isinstance(asset_sha256, str)
+                        or not SHA256.fullmatch(asset_sha256)
+                        or not isinstance(asset_size, int)
+                        or isinstance(asset_size, bool)
+                        or asset_size <= 0
+                    ):
+                        raise BundleValidationError(
+                            "frontend bundled-asset metadata is malformed"
+                        )
+                    payload_path = (
+                        PurePosixPath("ComfyUI/frontend") / relative
+                    ).as_posix()
+                    entry = regular.get(payload_path)
+                    if (
+                        entry is None
+                        or entry[0] != asset_sha256
+                        or entry[1] != asset_size
+                    ):
+                        raise BundleValidationError(
+                            "frontend bundled asset disagrees with the payload: "
+                            f"{payload_path}"
+                        )
+
+        source_path = (
+            f"ComfyUI/frontend/SOURCE-ComfyUI-frontend-{frontend.get('version')}.tar.gz"
+        )
+        source_entry = regular.get(source_path)
+        if source_entry is None or source_entry[1] <= 0:
+            raise BundleValidationError(
+                "pinned frontend source snapshot is missing or empty"
             )
 
     @staticmethod
@@ -882,6 +1387,11 @@ class EnvironmentUpdater:
 
     def _activate(self, bundle: ValidatedBundle) -> UpdateResult:
         was_running = self.supervisor.is_running
+        had_active_environment = self.paths.comfyui.is_dir()
+        if self.paths.comfyui.exists() and not had_active_environment:
+            raise UpdateError(
+                f"installed environment path is not a directory: {self.paths.comfyui}"
+            )
         rollback_root = self.paths.state / "rollback"
         rollback_root.mkdir(parents=True, exist_ok=True)
         transaction_id = uuid.uuid4().hex
@@ -912,6 +1422,7 @@ class EnvironmentUpdater:
             "phase": "prepared",
             "backup": backup.relative_to(self.paths.root).as_posix(),
             "transaction": transaction.relative_to(self.paths.root).as_posix(),
+            "had_active_environment": had_active_environment,
             "had_environment_manifest": old_manifest is not None,
             "had_environment_checksums": old_checksums is not None,
         }
@@ -919,14 +1430,13 @@ class EnvironmentUpdater:
         self.supervisor.stop()
         activated = False
         try:
-            if not self.paths.comfyui.is_dir():
-                raise UpdateError(
-                    f"installed environment directory is missing: {self.paths.comfyui}"
-                )
-            self.paths.comfyui.replace(backup)
-            self._fsync_directory(self.paths.root)
-            self._fsync_directory(backup.parent)
-            journal["phase"] = "old_moved"
+            if had_active_environment:
+                self.paths.comfyui.replace(backup)
+                self._fsync_directory(self.paths.root)
+                self._fsync_directory(backup.parent)
+                journal["phase"] = "old_moved"
+            else:
+                journal["phase"] = "old_absent"
             self._write_journal(journal)
             bundle.environment.replace(self.paths.comfyui)
             self._fsync_directory(self.paths.root)
@@ -967,6 +1477,12 @@ class EnvironmentUpdater:
             except Exception as stop_error:
                 rollback_errors.append(f"stop failed: {stop_error}")
             try:
+                # Persist rollback intent before moving either generation. If
+                # power is lost after backup -> ComfyUI but before journal
+                # cleanup, startup can distinguish the restored old tree from
+                # an uncommitted candidate whose backup has disappeared.
+                journal["phase"] = "rollback_started"
+                self._write_journal(journal)
                 if activated and self.paths.comfyui.exists():
                     self.paths.comfyui.replace(failed)
                 if backup.exists():

@@ -27,6 +27,7 @@ tool="$work_dir/appimagetool-x86_64.AppImage"
 runtime_file="$work_dir/runtime-x86_64"
 runtime_license="$work_dir/AppImage-runtime-LICENSE"
 chromium_license="$work_dir/QtWebEngine-Chromium-LICENSE"
+qtwebengine_notices="$work_dir/Qt-${QT_RUNTIME_VERSION}-notices"
 proxy_tools_license="$work_dir/proxy-tools-LICENSE.txt"
 output="$portable_root/Portable-Comfy.AppImage"
 
@@ -214,9 +215,23 @@ download_verified "$APPIMAGE_RUNTIME_LICENSE_URL" "$runtime_license" \
   "$APPIMAGE_RUNTIME_LICENSE_SHA256"
 download_verified "$QTWEBENGINE_CHROMIUM_LICENSE_URL" "$chromium_license" \
   "$QTWEBENGINE_CHROMIUM_LICENSE_SHA256"
+"$build_python" "$SCRIPT_DIR/qtwebengine_notices.py" "$qtwebengine_notices" \
+  --url "$QT_LICENSES_USED_URL" \
+  --webengine-url "$QTWEBENGINE_NOTICES_URL" \
+  --main-sha256 "$QT_LICENSES_USED_SHA256" \
+  --webengine-sha256 "$QTWEBENGINE_NOTICES_MAIN_SHA256" \
+  --manifest-sha256 "$QTWEBENGINE_NOTICES_MANIFEST_SHA256" \
+  --module-license-manifest-sha256 \
+    "$QTWEBENGINE_MODULE_LICENSES_MANIFEST_SHA256" \
+  --expected-linked-pages "$QTWEBENGINE_NOTICES_LINKED_PAGES" \
+  --qt-version "$QT_RUNTIME_VERSION" \
+  --qtwebengine-commit "$QTWEBENGINE_SOURCE_COMMIT" \
+  --chromium-commit "$QTWEBENGINE_CHROMIUM_COMMIT"
 cp -- "$runtime_license" "$appdir/usr/share/licenses/AppImage-runtime-MIT.txt"
 cp -- "$chromium_license" \
   "$appdir/usr/share/licenses/QtWebEngine-Chromium-BSD-3-Clause.txt"
+cp -a -- "$qtwebengine_notices" \
+  "$appdir/usr/share/licenses/Qt-${QT_RUNTIME_VERSION}-attributions"
 
 # Keep launcher notices inspectable beside the AppImage as well as inside it.
 # The duplicate text compresses well and avoids requiring AppImage extraction
@@ -230,6 +245,9 @@ cp -a -- "$appdir/usr/share/licenses/native-packages" \
 cp -- "$runtime_license" "$portable_root/LICENSES/AppImage-runtime-MIT.txt"
 cp -- "$chromium_license" \
   "$portable_root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt"
+rm -rf -- "$portable_root/LICENSES/Qt-${QT_RUNTIME_VERSION}-attributions"
+cp -a -- "$qtwebengine_notices" \
+  "$portable_root/LICENSES/Qt-${QT_RUNTIME_VERSION}-attributions"
 chmod 0755 "$tool"
 rm -f -- "$output"
 # appimagetool itself is an AppImage. Extraction mode works on GitHub runners

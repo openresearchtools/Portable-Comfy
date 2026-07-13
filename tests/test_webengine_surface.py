@@ -60,7 +60,9 @@ def test_capture_waits_past_loading_splash(
     screenshot = tmp_path / "rendered.png"
     attempts = 0
 
-    def capture(_endpoint: str, output: Path, _timeout: float) -> dict[str, object]:
+    def capture(
+        _endpoint: str, output: Path, _timeout: float, **_options: object
+    ) -> dict[str, object]:
         nonlocal attempts
         attempts += 1
         _png(output, 900, 620, varied=attempts > 1)

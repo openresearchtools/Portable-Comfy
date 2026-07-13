@@ -24,6 +24,7 @@ STRICT_TOP_LEVEL = {"ComfyUI", "manifest", "LICENSES"}
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
 RUNTIME_INSTALLED_REQUIREMENTS = "ComfyUI/runtime/installed-requirements.txt"
+FRONTEND_LICENSE_INVENTORY = "ComfyUI/frontend/LICENSES/npm/packages.json"
 CORE_LICENSE_FILES = (
     "ComfyUI/LICENSE",
     "ComfyUI/frontend/LICENSE",
@@ -109,6 +110,7 @@ def require_license_files(
     expected: dict[str, dict[str, object]],
     *,
     runtime: bool,
+    frontend: dict[str, object],
 ) -> None:
     required = CORE_LICENSE_FILES + (RUNTIME_LICENSE_FILES if runtime else ())
     for path_text in required:
@@ -120,6 +122,7 @@ def require_license_files(
             or entry["size"] <= 0
         ):
             fail(f"required redistribution notice is missing or empty: {path_text}")
+    require_frontend_license_inventory(root, expected, frontend)
     if not runtime:
         return
 
@@ -212,6 +215,148 @@ def require_license_files(
     frozen = read_frozen_requirements(root / RUNTIME_INSTALLED_REQUIREMENTS)
     if frozen != inventory_versions:
         fail("installed runtime requirements and package license inventory disagree")
+
+
+def require_frontend_license_inventory(
+    root: Path,
+    expected: dict[str, dict[str, object]],
+    frontend: dict[str, object],
+) -> None:
+    inventory_entry = expected.get(FRONTEND_LICENSE_INVENTORY)
+    if (
+        inventory_entry is None
+        or inventory_entry.get("type") != "file"
+        or not isinstance(inventory_entry.get("size"), int)
+        or inventory_entry["size"] <= 0
+    ):
+        fail("frontend dependency license inventory is missing or empty")
+    inventory = load_manifest(root / FRONTEND_LICENSE_INVENTORY)
+    packages = inventory.get("packages")
+    if (
+        inventory.get("schema_version") != 1
+        or inventory.get("frontend") != frontend
+        or not isinstance(packages, list)
+        or not packages
+    ):
+        fail("frontend dependency license inventory has an unsupported schema")
+    with_notices = sum(
+        isinstance(package, dict) and bool(package.get("notice_files"))
+        for package in packages
+    )
+    summary = {
+        "distributions": len(packages),
+        "with_notice_files": with_notices,
+        "metadata_only": len(packages) - with_notices,
+    }
+    if inventory.get("summary") != summary or with_notices != len(packages):
+        fail("frontend dependency license inventory is not comprehensive")
+
+    inventory_parent = PurePosixPath(FRONTEND_LICENSE_INVENTORY).parent
+    seen: set[tuple[str, str]] = set()
+    for package in packages:
+        if not isinstance(package, dict):
+            fail("frontend dependency license inventory contains a malformed package")
+        name = package.get("name")
+        version = package.get("version")
+        expression = package.get("license")
+        metadata_file = package.get("metadata_file")
+        notice_files = package.get("notice_files")
+        if (
+            not isinstance(name, str)
+            or not name
+            or "\\" in name
+            or "\x00" in name
+            or not isinstance(version, str)
+            or not version
+            or any(character.isspace() for character in version)
+            or not isinstance(expression, str)
+            or not expression.strip()
+            or not isinstance(metadata_file, str)
+            or not isinstance(notice_files, list)
+        ):
+            fail("frontend dependency license inventory contains malformed fields")
+        identity = (name, version)
+        if identity in seen:
+            fail(f"frontend dependency license inventory has a duplicate: {name}")
+        seen.add(identity)
+        for relative_text in [metadata_file, *notice_files]:
+            if not isinstance(relative_text, str):
+                fail("frontend dependency license inventory has a malformed path")
+            relative = PurePosixPath(relative_text)
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or ".." in relative.parts
+                or "\\" in relative_text
+                or "\x00" in relative_text
+                or relative.as_posix() != relative_text
+            ):
+                fail("frontend dependency license inventory has an unsafe path")
+            payload_path = (inventory_parent / relative).as_posix()
+            entry = expected.get(payload_path)
+            if (
+                entry is None
+                or entry.get("type") != "file"
+                or not isinstance(entry.get("size"), int)
+                or entry["size"] <= 0
+            ):
+                fail(f"frontend dependency notice is missing or empty: {payload_path}")
+
+        bundled_assets = package.get("bundled_assets")
+        if bundled_assets is not None:
+            if not isinstance(bundled_assets, list) or not bundled_assets:
+                fail("frontend bundled-asset inventory is malformed")
+            for asset in bundled_assets:
+                if not isinstance(asset, dict) or set(asset) != {
+                    "path",
+                    "sha256",
+                    "size",
+                }:
+                    fail("frontend bundled-asset inventory is malformed")
+                asset_path = asset.get("path")
+                asset_sha256 = asset.get("sha256")
+                asset_size = asset.get("size")
+                if not isinstance(asset_path, str):
+                    fail("frontend bundled-asset path is malformed")
+                relative = PurePosixPath(asset_path)
+                if (
+                    relative.is_absolute()
+                    or not relative.parts
+                    or ".." in relative.parts
+                    or "\\" in asset_path
+                    or "\x00" in asset_path
+                    or relative.as_posix() != asset_path
+                    or not isinstance(asset_sha256, str)
+                    or not HEX.fullmatch(asset_sha256)
+                    or not isinstance(asset_size, int)
+                    or isinstance(asset_size, bool)
+                    or asset_size <= 0
+                ):
+                    fail("frontend bundled-asset metadata is malformed")
+                payload_path = (PurePosixPath("ComfyUI/frontend") / relative).as_posix()
+                entry = expected.get(payload_path)
+                if (
+                    entry is None
+                    or entry.get("type") != "file"
+                    or entry.get("sha256") != asset_sha256
+                    or entry.get("size") != asset_size
+                ):
+                    fail(
+                        "frontend bundled asset disagrees with the payload: "
+                        f"{payload_path}"
+                    )
+
+    source_path = (
+        f"ComfyUI/frontend/SOURCE-ComfyUI-frontend-{frontend.get('version')}.tar.gz"
+    )
+    source_entry = expected.get(source_path)
+    if (
+        source_entry is None
+        or source_entry.get("type") != "file"
+        or not isinstance(source_entry.get("size"), int)
+        or source_entry["size"] <= 0
+    ):
+        fail("pinned frontend source snapshot is missing or empty")
 
 
 def read_frozen_requirements(path: Path) -> dict[str, str]:
@@ -457,7 +602,9 @@ def main() -> None:
     if checksum_entries != wanted_checksums:
         fail("environment checksum list disagrees with manifest")
 
-    require_license_files(root, expected, runtime=not args.structural)
+    require_license_files(
+        root, expected, runtime=not args.structural, frontend=frontend
+    )
 
     identity_path = comfyui / IDENTITY_NAME
     identity_entry = expected.get(f"ComfyUI/{IDENTITY_NAME}")

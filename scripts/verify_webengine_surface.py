@@ -201,7 +201,15 @@ def _command(
         return result
 
 
-def capture_surface(endpoint: str, output: Path, timeout: float) -> dict[str, Any]:
+def capture_surface(
+    endpoint: str,
+    output: Path,
+    timeout: float,
+    *,
+    url_prefix: str | None = "http://127.0.0.1:",
+    title_contains: str | None = "comfy",
+    body_contains: str | None = None,
+) -> dict[str, Any]:
     targets = _devtools_targets(endpoint, timeout)
     pages = [item for item in targets if item.get("type") == "page"]
     target = next(
@@ -225,7 +233,8 @@ def capture_surface(endpoint: str, output: Path, timeout: float) -> dict[str, An
                 "({readyState:document.readyState,title:document.title,"
                 "url:location.href,width:document.documentElement.clientWidth,"
                 "height:document.documentElement.clientHeight,"
-                "bodyChildren:document.body?document.body.children.length:0})"
+                "bodyChildren:document.body?document.body.children.length:0,"
+                "bodyText:document.body?(document.body.innerText||'').slice(0,4096):''})"
             ),
             returnByValue=True,
         )
@@ -235,10 +244,21 @@ def capture_surface(endpoint: str, output: Path, timeout: float) -> dict[str, An
             raise SurfaceError("DevTools could not inspect the rendered document")
         if document.get("readyState") != "complete":
             raise SurfaceError(f"WebEngine document is not complete: {document}")
-        if not str(document.get("url", "")).startswith("http://127.0.0.1:"):
+        if url_prefix is not None and not str(document.get("url", "")).startswith(
+            url_prefix
+        ):
             raise SurfaceError(f"WebEngine loaded an unexpected URL: {document}")
-        if "comfy" not in str(document.get("title", "")).lower():
+        if (
+            title_contains is not None
+            and title_contains.lower() not in str(document.get("title", "")).lower()
+        ):
             raise SurfaceError(f"WebEngine loaded an unexpected document: {document}")
+        if body_contains is not None and body_contains not in str(
+            document.get("bodyText", "")
+        ):
+            raise SurfaceError(
+                f"WebEngine document does not contain {body_contains!r}: {document}"
+            )
         if int(document.get("width", 0)) < 800 or int(document.get("height", 0)) < 600:
             raise SurfaceError(f"WebEngine document viewport is too small: {document}")
         if int(document.get("bodyChildren", 0)) < 1:
@@ -388,6 +408,9 @@ def capture_validated_surface(
     timeout: float,
     *,
     retry_interval: float = 0.2,
+    url_prefix: str | None = "http://127.0.0.1:",
+    title_contains: str | None = "comfy",
+    body_contains: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, float | int]]:
     """Wait for asynchronous frontend startup to produce a usable viewport."""
 
@@ -401,7 +424,14 @@ def capture_validated_surface(
                 f"{last_error}"
             ) from last_error
         try:
-            document = capture_surface(endpoint, output, remaining)
+            document = capture_surface(
+                endpoint,
+                output,
+                remaining,
+                url_prefix=url_prefix,
+                title_contains=title_contains,
+                body_contains=body_contains,
+            )
             stats = png_luminance(output)
             validate_surface(stats)
             return document, stats
@@ -418,12 +448,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("endpoint", help="loopback Qt WebEngine DevTools HTTP endpoint")
     parser.add_argument("output", type=Path, help="destination PNG evidence")
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--allow-local-page",
+        action="store_true",
+        help="allow the launcher's internal HTML page instead of requiring localhost",
+    )
+    parser.add_argument(
+        "--body-contains",
+        help="require this exact text in the rendered document body",
+    )
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     try:
         document, stats = capture_validated_surface(
-            args.endpoint, args.output, args.timeout
+            args.endpoint,
+            args.output,
+            args.timeout,
+            url_prefix=None if args.allow_local_page else "http://127.0.0.1:",
+            title_contains=None if args.allow_local_page else "comfy",
+            body_contains=args.body_contains,
         )
     except (OSError, SurfaceError, ValueError) as error:
         print(f"webengine surface verification failed: {error}", file=sys.stderr)

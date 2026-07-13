@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -10,7 +12,9 @@ import pytest
 from portable_comfy.app import (
     DESKTOP_SMOKE_ACK_ENV,
     DESKTOP_SMOKE_READY_ENV,
+    QT_DARK_STYLESHEET,
     DesktopController,
+    _apply_qt_dark_theme,
     _confirm_desktop_smoke_surface,
     _menu,
     main,
@@ -19,6 +23,95 @@ from portable_comfy.app import (
 from portable_comfy.locking import AlreadyRunningError, InstanceLock
 from portable_comfy.paths import PortablePaths
 from portable_comfy.updater import EnvironmentUpdater
+
+
+def test_qt_dark_theme_sets_readable_native_menu_colors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ColorRole:
+        Window = "window"
+        WindowText = "window-text"
+        Base = "base"
+        AlternateBase = "alternate-base"
+        ToolTipBase = "tooltip-base"
+        ToolTipText = "tooltip-text"
+        Text = "text"
+        Button = "button"
+        ButtonText = "button-text"
+        BrightText = "bright-text"
+        Link = "link"
+        Highlight = "highlight"
+        HighlightedText = "highlighted-text"
+        PlaceholderText = "placeholder-text"
+
+    class ColorGroup:
+        Disabled = "disabled"
+
+    class FakePalette:
+        def __init__(self) -> None:
+            self.colors: dict[object, str] = {}
+
+        def setColor(self, *args: object) -> None:
+            *key, color = args
+            self.colors[tuple(key)] = str(color)
+
+    FakePalette.ColorRole = ColorRole  # type: ignore[attr-defined]
+    FakePalette.ColorGroup = ColorGroup  # type: ignore[attr-defined]
+
+    class FakeApplication:
+        current: FakeApplication | None = None
+        attributes: list[object] = []
+
+        @classmethod
+        def setAttribute(cls, value: object) -> None:
+            cls.attributes.append(value)
+
+        def __init__(self, _args: list[str]) -> None:
+            type(self).current = self
+            self.style = ""
+            self.palette: FakePalette | None = None
+            self.stylesheet = ""
+
+        @classmethod
+        def instance(cls) -> FakeApplication | None:
+            return cls.current
+
+        def setStyle(self, value: str) -> None:
+            self.style = value
+
+        def setPalette(self, value: FakePalette) -> None:
+            self.palette = value
+
+        def setStyleSheet(self, value: str) -> None:
+            self.stylesheet = value
+
+    fake_qtpy = types.ModuleType("qtpy")
+    fake_core = types.ModuleType("qtpy.QtCore")
+    fake_core.Qt = types.SimpleNamespace(
+        ApplicationAttribute=types.SimpleNamespace(AA_ShareOpenGLContexts="shared-gl")
+    )
+    fake_gui = types.ModuleType("qtpy.QtGui")
+    fake_gui.QColor = str  # type: ignore[attr-defined]
+    fake_gui.QPalette = FakePalette  # type: ignore[attr-defined]
+    fake_widgets = types.ModuleType("qtpy.QtWidgets")
+    fake_widgets.QApplication = FakeApplication  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "qtpy", fake_qtpy)
+    monkeypatch.setitem(sys.modules, "qtpy.QtCore", fake_core)
+    monkeypatch.setitem(sys.modules, "qtpy.QtGui", fake_gui)
+    monkeypatch.setitem(sys.modules, "qtpy.QtWidgets", fake_widgets)
+
+    application = _apply_qt_dark_theme()
+
+    assert application.attributes == ["shared-gl"]
+    assert application.style == "Fusion"
+    assert application.palette is not None
+    assert application.palette.colors[(ColorRole.WindowText,)] == "#eaf0ff"
+    assert application.palette.colors[(ColorRole.ButtonText,)] == "#eaf0ff"
+    assert application.palette.colors[(ColorRole.HighlightedText,)] == "#ffffff"
+    assert application.stylesheet == QT_DARK_STYLESHEET
+    assert "QMenuBar::item" in application.stylesheet
+    assert "QMenu::item:selected" in application.stylesheet
+    assert "color: #eaf0ff" in application.stylesheet
 
 
 def test_self_test_needs_no_bundled_runtime(tmp_path: Path) -> None:
@@ -42,6 +135,8 @@ class _Window:
         self.urls: list[str] = []
         self.pages: list[str] = []
         self.confirmations: list[tuple[str, str]] = []
+        self.file_dialogs: list[dict[str, object]] = []
+        self.file_selection: list[str] = []
 
     def load_url(self, value: str) -> None:
         self.urls.append(value)
@@ -52,6 +147,10 @@ class _Window:
     def create_confirmation_dialog(self, title: str, message: str) -> bool:
         self.confirmations.append((title, message))
         return True
+
+    def create_file_dialog(self, _kind: int, **options: object) -> list[str]:
+        self.file_dialogs.append(options)
+        return self.file_selection
 
 
 class _Supervisor:
@@ -94,11 +193,11 @@ def test_native_menu_exposes_lifecycle_and_updater(tmp_path: Path) -> None:
     assert [menu.title for menu in menus] == [
         "Server",
         "View",
-        "Core",
+        "Environment",
         "Help",
     ]
     assert [item.title for item in menus[0].items] == ["Start", "Stop", "Restart"]
-    assert [item.title for item in menus[2].items] == ["Install complete bundle…"]
+    assert [item.title for item in menus[2].items] == ["Install local environment…"]
     controller._start()
     assert window.urls == [supervisor.url]
     controller._restart()
@@ -166,7 +265,156 @@ def test_about_gracefully_handles_missing_identity(tmp_path: Path) -> None:
 
     controller.about()
 
-    assert "Installed Core identity: unavailable" in window.confirmations[-1][1]
+    assert "Installed ComfyUI environment: unavailable" in window.confirmations[-1][1]
+
+
+def test_desktop_bootstraps_without_a_comfyui_environment(tmp_path: Path) -> None:
+    window = _Window()
+    supervisor = _Supervisor()
+    controller = DesktopController(
+        window,
+        PortablePaths(tmp_path),
+        supervisor,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        auto_start=True,
+    )
+
+    controller.launch()
+
+    assert not supervisor.running
+    assert "ComfyUI environment not installed" in window.pages[-1]
+    assert ".parts.json" in window.pages[-1]
+    assert "Install local environment" in window.pages[-1]
+
+
+def test_bootstrap_desktop_smoke_succeeds_only_without_an_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Loaded:
+        def clear(self) -> None:
+            pass
+
+    window = _Window()
+    window.events = types.SimpleNamespace(loaded=Loaded())  # type: ignore[attr-defined]
+    controller = DesktopController(
+        window,
+        PortablePaths(tmp_path),
+        _Supervisor(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        auto_start=True,
+        desktop_smoke=True,
+        bootstrap_smoke=True,
+    )
+    outcomes: list[bool] = []
+    monkeypatch.setattr(controller, "_schedule_smoke_close", outcomes.append)
+
+    controller.launch()
+
+    assert outcomes == [True]
+    assert "ComfyUI environment not installed" in window.pages[-1]
+
+
+def test_bootstrap_desktop_smoke_rejects_an_existing_broken_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Loaded:
+        def clear(self) -> None:
+            pass
+
+    paths = PortablePaths(tmp_path)
+    paths.comfyui.mkdir()
+    window = _Window()
+    window.events = types.SimpleNamespace(loaded=Loaded())  # type: ignore[attr-defined]
+    controller = DesktopController(
+        window,
+        paths,
+        _Supervisor(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        auto_start=True,
+        desktop_smoke=True,
+        bootstrap_smoke=True,
+    )
+    outcomes: list[bool] = []
+    monkeypatch.setattr(controller, "_schedule_smoke_close", outcomes.append)
+
+    controller.launch()
+
+    assert outcomes == [False]
+    assert "ComfyUI environment unavailable" in window.pages[-1]
+
+
+def test_local_installer_file_picker_accepts_descriptor_or_numbered_part(
+    tmp_path: Path,
+) -> None:
+    window = _Window()
+    controller = DesktopController(
+        window,
+        PortablePaths(tmp_path),
+        _Supervisor(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        auto_start=False,
+    )
+
+    controller.install_bundle()
+
+    filters = window.file_dialogs[-1]["file_types"]
+    assert isinstance(filters, tuple)
+    assert "*.parts.json" in filters[0]
+    assert "*.part????" in filters[0]
+
+
+def test_main_opens_desktop_when_environment_is_not_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[Path] = []
+
+    def run_desktop(
+        paths: PortablePaths,
+        _supervisor: object,
+        **_kwargs: object,
+    ) -> int:
+        observed.append(paths.root)
+        assert not paths.comfyui.exists()
+        return 0
+
+    monkeypatch.setattr("portable_comfy.app._run_desktop", run_desktop)
+
+    root = tmp_path / "standalone"
+    assert main(["--root", str(root)]) == 0
+    assert observed == [root.resolve()]
+
+
+def test_cli_installs_environment_before_runtime_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: object
+) -> None:
+    selected = tmp_path / "Portable-Comfy-core-v9.9.9.parts.json"
+    selected.write_text("{}", encoding="utf-8")
+    observed: list[Path] = []
+
+    def install(_self: object, source: Path) -> object:
+        observed.append(source)
+        return types.SimpleNamespace(
+            version="9.9.9",
+            commit="a" * 40,
+            generation_id="generation-test",
+        )
+
+    monkeypatch.setattr(EnvironmentUpdater, "install_bundle", install)
+
+    assert (
+        main(
+            [
+                "--root",
+                str(tmp_path / "standalone"),
+                "--install-environment",
+                str(selected),
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert json.loads(captured.out)["generation_id"] == "generation-test"
+    assert observed == [selected]
 
 
 def test_main_locks_before_runtime_repair(

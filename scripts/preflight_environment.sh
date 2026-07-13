@@ -51,8 +51,14 @@ python3 "$SCRIPT_DIR/verify_environment_bundle.py" "${verify_args[@]}"
 
 [[ -s "$root/ComfyUI/LICENSE" \
    && -s "$root/ComfyUI/frontend/LICENSE" \
-   && -s "$root/ComfyUI/frontend/THIRD_PARTY_NOTICES.md" ]] \
+   && -s "$root/ComfyUI/frontend/THIRD_PARTY_NOTICES.md" \
+   && -s "$root/ComfyUI/frontend/LICENSES/npm/packages.json" ]] \
   || die "ComfyUI Core/frontend redistribution notices are incomplete"
+frontend_source="$root/ComfyUI/frontend/SOURCE-ComfyUI-frontend-${FRONTEND_VERSION}.tar.gz"
+[[ -s "$frontend_source" ]] || die "pinned frontend source snapshot is missing"
+if ((structural == 0)); then
+  printf '%s  %s\n' "$FRONTEND_SOURCE_SHA256" "$frontend_source" | sha256sum -c -
+fi
 
 python3 - "$root/manifest/environment.json" <<PY
 import json, sys

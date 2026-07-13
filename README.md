@@ -10,12 +10,14 @@ This repository is an early Linux x86-64 prototype.
 
 ## Portable layout
 
-Extract the complete archive and keep the directory together:
+Extract the standalone launcher archive and keep the directory together. The
+download intentionally has no `ComfyUI/` directory; installing a complete Core
+bundle creates it beside the AppImage:
 
 ```text
 Portable-Comfy/
 ├── Portable-Comfy.AppImage       # double-click entry point
-├── ComfyUI/                       # one atomic environment generation
+├── ComfyUI/                       # added/replaced by a complete Core bundle
 │   ├── frontend/                  # matching compiled web frontend
 │   └── runtime/
 │       └── python/                # CPython, locked Core deps and Torch/CUDA
@@ -47,6 +49,9 @@ top-level `workflows/` directory stores the real files;
 Each ComfyUI environment includes source-built CPython 3.13.12. The initial pinned
 baseline is ComfyUI v0.27.0, frontend 1.45.20, Torch 2.12.0+cu130,
 torchvision 0.27.0+cu130 and torchaudio 2.11.0+cu130.
+The compiled frontend travels with its exact 1.45.20 source snapshot and a
+lock-derived production dependency notice inventory, plus checksum-bound
+notices for dependencies copied directly into the compiled output.
 The builder pre-creates ComfyUI's standard model-category directories beneath
 `models/`. The only bundled model files are eight small, pinned TAESD preview
 encoder/decoder weights under `models/vae_approx/`; user checkpoints and other
@@ -54,16 +59,19 @@ generation models are not shipped.
 
 ## Desktop lifecycle
 
-Opening the AppImage starts ComfyUI automatically, waits for its HTTP health
-endpoint, and then loads the web interface. Closing the final application
-window terminates the complete server process group so node-created child
-processes do not remain behind.
+On a new launcher-only installation, opening the AppImage presents the local
+environment installer instead of trying to start a missing server. After a Core
+bundle has been installed, opening the AppImage starts ComfyUI automatically,
+waits for its HTTP health endpoint, and then loads the web interface. Closing
+the final application window terminates the complete server process group so
+node-created child processes do not remain behind.
 
 The native application menu provides:
 
 - **Server → Start, Stop, Restart** for explicit lifecycle control.
 - **View → Reload** to reload the web interface without replacing the environment.
-- **Core → Install complete bundle…** for a local, validated full-Core update.
+- **Environment → Install local environment…** for a local, validated full-Core
+  install or update, including multipart bundles.
 - **Help → About** for the installed generation, exact Core/frontend
   commits, and Python/Torch/CUDA versions.
 
@@ -73,11 +81,16 @@ an untrusted network.
 
 ## Full Core bundles and persistent data
 
-A `Portable-Comfy-core-v<version>.tar.gz` archive replaces the complete
-`ComfyUI/` generation. Here **Core bundle means the whole replaceable folder**:
+A logical `Portable-Comfy-core-v<version>.tar.gz` archive replaces the complete
+`ComfyUI/` generation. It is distributed as one small JSON descriptor and
+ordered `.part0001`, `.part0002`, … files, each no larger than 1.9 GB. Keep all
+of those files together and select the descriptor or any part in the installer;
+the launcher verifies each part and the reconstructed archive before staging it.
+Here **Core bundle means the whole replaceable folder**:
 pinned ComfyUI Core source, its matching compiled frontend, source-built
 Python, all locked Core requirements, Torch and CUDA user-space libraries. It
-is not a source-only patch. The installer stops the server, validates every
+also contains the exact frontend source snapshot and dependency notices; it is
+not a source-only patch. The installer stops the server, validates every
 file and safe relative link, stages the new tree, checks it with the candidate's
 own interpreter, preserves the previous generation for rollback, starts the
 candidate, and commits only after a successful health check. A failed start
@@ -85,8 +98,8 @@ restores the previous generation automatically. The launcher keeps the two
 newest successful rollback generations under `state/rollback/`.
 Before either rename it fsyncs an update journal. If power loss or termination
 interrupts activation, the next single-instance startup restores the rollback
-environment/manifest and preserves an uncommitted candidate under
-`state/recovered/` for diagnosis.
+environment/manifest—or the launcher-only state during first installation—and
+preserves an uncommitted candidate under `state/recovered/` for diagnosis.
 
 The following are never part of a full-Core update and remain untouched:
 
@@ -110,9 +123,10 @@ active manifest. It accepts compatible full-Core updates, but refuses an ABI
 change until that persistent venv is moved aside or rebuilt for the new
 generation.
 
-This version installs only a bundle the user selects locally. The validated
-bundle format can later be served from GitHub Releases without changing the
-transactional installer; no network update feed or Release is enabled yet.
+This version installs only a bundle the user selects locally. Actions artifacts
+are downloaded manually for testing. The sub-2-GB part format can later be
+served as ordinary GitHub Release assets without changing the transactional
+installer; no network update feed or Release is enabled yet.
 
 ## Custom nodes
 
@@ -189,21 +203,24 @@ portable-comfy --root /tmp/Portable-Comfy --self-test
 Build scripts and artifact verification are documented in
 [Building and testing](docs/building.md). The repository has one deliberately
 manual workflow: **Actions → Build portable artifacts → Run workflow**. It
-builds and non-interactively preflights the two archives, without GUI smoke jobs
-on hosted runners.
+builds and non-interactively preflights the launcher archive and multipart Core
+payload, without GUI smoke jobs on hosted runners.
 
 ## License
 
 Portable Comfy is licensed under GPL-3.0. Bundled components retain their
 own licenses. The portable CPython runtime is built from upstream CPython
 source rather than copied from a third-party standalone distribution. The
-complete archive keeps the project license at its top level and provides an
-indexed `LICENSES/` directory. Core and frontend notices also travel inside
-the replaceable `ComfyUI/` environment; CPython's PSF license sits beside the
-interpreter; installed Python/Torch/CUDA wheel notices sit under
+standalone launcher archive keeps the project license at its top level and
+provides an indexed `LICENSES/` directory. Core and frontend notices travel inside
+the replaceable `ComfyUI/` environment. The frontend keeps its pinned source
+archive and all lock-resolved npm notices under `frontend/LICENSES/npm/`;
+CPython's PSF license sits beside the interpreter; installed Python/Torch/CUDA wheel notices sit under
 `ComfyUI/runtime/LICENSES/`; and AppImage launcher notices cover PyWebView,
 PyInstaller, PyQt/Qt WebEngine, Chromium, the embedded AppImage runtime and
-native Ubuntu libraries copied into the launcher. The native notice directory
+native Ubuntu libraries copied into the launcher. The standalone notice tree
+also contains the checksum-pinned Qt 6.11.1 attribution mirror and exact
+QtWebEngine module license set. The native notice directory
 includes a complete PyInstaller-source provenance ledger and an exact Debian
 package/version/copyright ledger; an unclassified absolute build input is a
 hard build failure.

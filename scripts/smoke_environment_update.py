@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a real full-Core update against an extracted first-install tree."""
+"""Exercise a first install or update against an extracted launcher tree."""
 
 from __future__ import annotations
 
@@ -30,9 +30,13 @@ SENTINELS = {
 }
 
 
-def write_sentinels(root: Path) -> dict[Path, bytes]:
+def write_sentinels(
+    root: Path, *, include_node_runtime: bool = True
+) -> dict[Path, bytes]:
     result: dict[Path, bytes] = {}
     for relative, content in SENTINELS.items():
+        if not include_node_runtime and relative.startswith("custom_node_runtime/"):
+            continue
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
@@ -93,9 +97,11 @@ def main() -> None:
 
     paths = PortablePaths(args.portable_root)
     paths.create_layout()
-    paths.validate_runtime()
-    paths.repair_runtime_metadata()
-    paths.ensure_node_runtime()
+    bootstrap = not paths.comfyui.exists()
+    if not bootstrap:
+        paths.validate_runtime()
+        paths.repair_runtime_metadata()
+        paths.ensure_node_runtime()
     manager_config = paths.manager_config.read_bytes()
     manager_text = manager_config.decode("utf-8")
     if (
@@ -106,18 +112,21 @@ def main() -> None:
             "ComfyUI Manager is not configured for the persistent node venv"
         )
 
-    sentinels = write_sentinels(paths.root)
-    node_dependency = (
-        paths.custom_node_site_packages / "portable_update_smoke_node_dep.py"
-    )
-    node_dependency.write_text(
-        "SENTINEL = 'persistent node dependency'\n", encoding="utf-8"
-    )
-    sentinels[node_dependency] = node_dependency.read_bytes()
-    old_generation_marker = (
-        paths.comfyui / "environment-update-smoke-old-generation.txt"
-    )
-    old_generation_marker.write_text("must move to rollback\n", encoding="utf-8")
+    sentinels = write_sentinels(paths.root, include_node_runtime=not bootstrap)
+    node_dependency: Path | None = None
+    old_generation_marker: Path | None = None
+    if not bootstrap:
+        node_dependency = (
+            paths.custom_node_site_packages / "portable_update_smoke_node_dep.py"
+        )
+        node_dependency.write_text(
+            "SENTINEL = 'persistent node dependency'\n", encoding="utf-8"
+        )
+        sentinels[node_dependency] = node_dependency.read_bytes()
+        old_generation_marker = (
+            paths.comfyui / "environment-update-smoke-old-generation.txt"
+        )
+        old_generation_marker.write_text("must move to rollback\n", encoding="utf-8")
 
     supervisor = ServerSupervisor(
         paths,
@@ -139,10 +148,15 @@ def main() -> None:
     assert_sentinels(sentinels)
     if paths.manager_config.read_bytes() != manager_config:
         raise RuntimeError("full-Core update changed persistent Manager configuration")
-    if old_generation_marker.exists():
+    if old_generation_marker is not None and old_generation_marker.exists():
         raise RuntimeError("old ComfyUI generation was not replaced")
     rollbacks = sorted((paths.state / "rollback").glob("ComfyUI-*"))
-    if (
+    if bootstrap:
+        if rollbacks:
+            raise RuntimeError(
+                "first install unexpectedly created a rollback generation"
+            )
+    elif (
         not rollbacks
         or not (rollbacks[-1] / "environment-update-smoke-old-generation.txt").is_file()
     ):
@@ -157,14 +171,23 @@ def main() -> None:
         raise RuntimeError("activated environment frontend is missing")
     if not paths.python_executable().is_file():
         raise RuntimeError("activated environment runtime is missing")
+    if bootstrap:
+        paths.ensure_node_runtime()
+        node_dependency = (
+            paths.custom_node_site_packages / "portable_update_smoke_node_dep.py"
+        )
+        node_dependency.write_text(
+            "SENTINEL = 'persistent node dependency'\n", encoding="utf-8"
+        )
     active_runtime(paths, manifest["runtime"])
     print(
         json.dumps(
             {
                 "generation_id": result.generation_id,
                 "core_version": result.version,
+                "first_install": bootstrap,
                 "persistent_sentinels": len(sentinels),
-                "rollback": rollbacks[-1].name,
+                "rollback": None if bootstrap else rollbacks[-1].name,
             },
             sort_keys=True,
         )

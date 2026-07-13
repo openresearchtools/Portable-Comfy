@@ -34,6 +34,8 @@ jobs:
           printf 'full_archive=Portable-Comfy-linux-x86_64.tar.gz\n' >> "$GITHUB_OUTPUT"
           printf 'core_archive=Portable-Comfy-core-v%s.tar.gz\n' \
             "$COMFY_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'core_artifact=Portable-Comfy-core-v%s-multipart\n' \
+            "$COMFY_VERSION" >> "$GITHUB_OUTPUT"
 
       # A stock hosted runner starts with roughly 14 GB free. The portable
       # CPython, QtWebEngine and CUDA wheel trees need more room while both
@@ -57,6 +59,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ steps.versions.outputs.python_version }}
+
+      - name: Set up pinned frontend notice tooling
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '24'
+
+      - name: Set up pinned pnpm
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        with:
+          version: 11.1.1
+          run_install: false
 
       - name: Install native build dependencies
         run: |
@@ -103,7 +116,7 @@ jobs:
             xz-utils \
             zlib1g-dev
 
-      - name: Build complete portable archive
+      - name: Build standalone launcher archive and environment source
         shell: bash
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts" "$RUNNER_TEMP/portable-build"
@@ -117,7 +130,7 @@ jobs:
           scripts/build_environment_bundle.sh \
             --output-dir "$GITHUB_WORKSPACE/artifacts" \
             --work-dir "$RUNNER_TEMP/environment-build" \
-            --source-root "$RUNNER_TEMP/portable-build/Portable-Comfy"
+            --source-root "$RUNNER_TEMP/portable-build/environment-source/Portable-Comfy"
 
       - name: Preflight generated packages
         shell: bash
@@ -126,13 +139,56 @@ jobs:
             "artifacts/${{ steps.versions.outputs.full_archive }}"
           scripts/preflight_environment.sh \
             "artifacts/${{ steps.versions.outputs.core_archive }}"
-          (cd artifacts && sha256sum -- *.tar.gz | tee SHA256SUMS)
+          python3 scripts/split_archive.py \
+            "artifacts/${{ steps.versions.outputs.core_archive }}" \
+            --output-dir artifacts \
+            --part-size 1900000000
+          test ! -e "artifacts/${{ steps.versions.outputs.core_archive }}"
+          python3 - \
+            "artifacts/${{ steps.versions.outputs.full_archive }}" \
+            "artifacts/${{ steps.versions.outputs.core_archive }}.parts.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          launcher = pathlib.Path(sys.argv[1])
+          descriptor = pathlib.Path(sys.argv[2])
+          value = json.loads(descriptor.read_text(encoding="utf-8"))
+          expected_parts = {
+              descriptor.parent / part["filename"] for part in value["parts"]
+          }
+          actual_parts = set(
+              descriptor.parent.glob(
+                  f'{value["archive"]["filename"]}.part[0-9][0-9][0-9][0-9]'
+              )
+          )
+          assert launcher.stat().st_size <= 1_900_000_000
+          assert descriptor.stat().st_size <= 1_900_000_000
+          assert value["parts"]
+          assert all(part["size"] <= 1_900_000_000 for part in value["parts"])
+          assert actual_parts == expected_parts
+          assert sum(path.stat().st_size for path in actual_parts) == value["archive"]["size"]
+          uploaded_size = (
+              launcher.stat().st_size
+              + descriptor.stat().st_size
+              + sum(path.stat().st_size for path in actual_parts)
+          )
+          assert uploaded_size <= 10_000_000_000
+          print(
+              {
+                  "core_parts": len(value["parts"]),
+                  "logical_size": value["archive"]["size"],
+                  "uploaded_size": uploaded_size,
+              }
+          )
+          PY
+          (cd artifacts && sha256sum -- *.tar.gz *.parts.json *.part0*)
           du -h artifacts/*
           df -h /
 
       # upload-artifact always supplies an artifact container. Compression
       # level zero avoids recompressing an already-compressed tarball.
-      - name: Upload complete portable archive
+      - name: Upload standalone launcher archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.versions.outputs.full_archive }}
@@ -141,11 +197,13 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-      - name: Upload replaceable complete ComfyUI archive
+      - name: Upload multipart replaceable ComfyUI environment
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.versions.outputs.core_archive }}
-          path: artifacts/${{ steps.versions.outputs.core_archive }}
+          name: ${{ steps.versions.outputs.core_artifact }}
+          path: |
+            artifacts/${{ steps.versions.outputs.core_archive }}.parts.json
+            artifacts/${{ steps.versions.outputs.core_archive }}.part0*
           if-no-files-found: error
           compression-level: 0
           retention-days: 1

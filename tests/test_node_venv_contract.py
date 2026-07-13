@@ -19,9 +19,9 @@ def test_runtime_build_contains_no_legacy_overlay_hook() -> None:
     assert "portable_comfy_node_overlay.pth" not in verifier
 
 
-def test_portable_preflight_exercises_unseeded_system_site_venv() -> None:
-    preflight = (REPO / "scripts/preflight_portable.sh").read_text(encoding="utf-8")
+def test_launcher_creates_unseeded_system_site_venv() -> None:
+    paths = (REPO / "src/portable_comfy/paths.py").read_text(encoding="utf-8")
 
-    assert "--system-site-packages" in preflight
-    assert "--without-pip" in preflight
-    assert '"$node_python" -m pip install' in preflight
+    assert '"--system-site-packages"' in paths
+    assert '"--without-pip"' in paths
+    assert "include-system-site-packages = true" in paths

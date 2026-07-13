@@ -27,6 +27,99 @@ LOGGER = logging.getLogger("portable_comfy")
 DESKTOP_SMOKE_READY_ENV = "PORTABLE_COMFY_DESKTOP_SMOKE_READY"
 DESKTOP_SMOKE_ACK_ENV = "PORTABLE_COMFY_DESKTOP_SMOKE_ACK"
 
+QT_DARK_STYLESHEET = """
+QMenuBar {
+    background-color: #191c24;
+    color: #eaf0ff;
+    border-bottom: 1px solid #303746;
+}
+QMenuBar::item {
+    background-color: transparent;
+    color: #eaf0ff;
+    padding: 6px 10px;
+}
+QMenuBar::item:selected {
+    background-color: #303746;
+    color: #ffffff;
+}
+QMenuBar::item:pressed {
+    background-color: #3a465a;
+    color: #ffffff;
+}
+QMenu {
+    background-color: #191c24;
+    color: #eaf0ff;
+    border: 1px solid #303746;
+    padding: 4px;
+}
+QMenu::item {
+    background-color: transparent;
+    color: #eaf0ff;
+    padding: 6px 24px 6px 10px;
+}
+QMenu::item:selected {
+    background-color: #31505e;
+    color: #ffffff;
+}
+QMenu::item:disabled {
+    color: #747e92;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #303746;
+    margin: 4px 8px;
+}
+QToolTip {
+    background-color: #252a35;
+    color: #eaf0ff;
+    border: 1px solid #465065;
+}
+"""
+
+
+def _apply_qt_dark_theme() -> Any:
+    """Create Qt's application object and give all native chrome a dark palette."""
+
+    from qtpy.QtCore import Qt
+    from qtpy.QtGui import QColor, QPalette
+    from qtpy.QtWidgets import QApplication
+
+    # The application is intentionally created before pywebview initializes its
+    # backend so its menus inherit our palette. Qt WebEngine requires this
+    # attribute when its widgets are imported after QApplication is constructed.
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    application = QApplication.instance() or QApplication(sys.argv)
+    application.setStyle("Fusion")
+
+    palette = QPalette()
+    role = QPalette.ColorRole
+    colors = {
+        role.Window: "#111319",
+        role.WindowText: "#eaf0ff",
+        role.Base: "#111319",
+        role.AlternateBase: "#191c24",
+        role.ToolTipBase: "#252a35",
+        role.ToolTipText: "#eaf0ff",
+        role.Text: "#eaf0ff",
+        role.Button: "#191c24",
+        role.ButtonText: "#eaf0ff",
+        role.BrightText: "#ffffff",
+        role.Link: "#69e0ff",
+        role.Highlight: "#31505e",
+        role.HighlightedText: "#ffffff",
+        role.PlaceholderText: "#8f9bb2",
+    }
+    for color_role, color in colors.items():
+        palette.setColor(color_role, QColor(color))
+
+    disabled = QPalette.ColorGroup.Disabled
+    for color_role in (role.WindowText, role.Text, role.ButtonText):
+        palette.setColor(disabled, color_role, QColor("#747e92"))
+
+    application.setPalette(palette)
+    application.setStyleSheet(QT_DARK_STYLESHEET)
+    return application
+
 
 def _confirm_desktop_smoke_surface(
     closing: threading.Event, *, timeout: float = 30.0
@@ -91,6 +184,7 @@ class DesktopController:
         *,
         auto_start: bool,
         desktop_smoke: bool = False,
+        bootstrap_smoke: bool = False,
     ) -> None:
         self.window = window
         self.paths = paths
@@ -98,11 +192,32 @@ class DesktopController:
         self.updater = updater
         self.auto_start = auto_start
         self.desktop_smoke = desktop_smoke
+        self.bootstrap_smoke = bootstrap_smoke
         self.smoke_success: bool | None = None
         self._operation_lock = threading.Lock()
         self._closing = threading.Event()
 
     def launch(self) -> None:
+        problem = self._environment_problem()
+        if problem is not None:
+            if self.desktop_smoke:
+                self.window.events.loaded.clear()
+            self._show_environment_required(problem)
+            if self.desktop_smoke:
+                self._schedule_smoke_close(
+                    self.bootstrap_smoke and self._environment_is_absent()
+                )
+            return
+        if self.bootstrap_smoke:
+            self.window.load_html(
+                _page(
+                    "Bootstrap smoke test failed",
+                    "A ComfyUI environment is already installed.",
+                    error=True,
+                )
+            )
+            self._schedule_smoke_close(False)
+            return
         if self.auto_start:
             self.start_server()
         else:
@@ -126,12 +241,16 @@ class DesktopController:
         if self.supervisor.is_running and self.supervisor.url:
             self.window.load_url(self.supervisor.url)
         else:
-            self.window.load_html(
-                _page(
-                    "Server stopped",
-                    "Use Server → Start before reloading the interface.",
+            problem = self._environment_problem()
+            if problem is not None:
+                self._show_environment_required(problem)
+            else:
+                self.window.load_html(
+                    _page(
+                        "Server stopped",
+                        "Use Server → Start before reloading the interface.",
+                    )
                 )
-            )
 
     def install_bundle(self) -> None:
         if self._closing.is_set():
@@ -141,7 +260,7 @@ class DesktopController:
             directory=str(self.paths.root),
             allow_multiple=False,
             file_types=(
-                "Portable Comfy Core bundle (*.tar.gz;*.tgz)",
+                "Portable Comfy environment (*.parts.json;*.part????;*.tar.gz;*.tgz)",
                 "All files (*.*)",
             ),
         )
@@ -149,8 +268,10 @@ class DesktopController:
             return
         archive = Path(selected[0])
         if not self.window.create_confirmation_dialog(
-            "Install complete Core bundle",
+            "Install complete ComfyUI environment",
             f"Validate and install {archive.name}?\n\n"
+            "For a multipart download, keep its descriptor and every numbered "
+            "part together in this directory.\n\n"
             "This replaces the complete ComfyUI folder, including its Core, "
             "frontend, private Python, Torch/CUDA and locked dependencies.\n\n"
             "Models, custom nodes, workflows, user data and their Python packages "
@@ -167,12 +288,12 @@ class DesktopController:
             else:
                 self.window.load_html(
                     _page(
-                        "Complete Core bundle installed",
+                        "ComfyUI environment installed",
                         f"ComfyUI {result.version} is installed. Use Server → Start when ready.",
                     )
                 )
 
-        self._background("Installing complete Core bundle", operation)
+        self._background("Installing ComfyUI environment", operation)
 
     def about(self) -> None:
         identity = self._installed_identity_summary()
@@ -244,7 +365,32 @@ class DesktopController:
             json.JSONDecodeError,
         ) as error:
             LOGGER.warning("installed Core identity is unavailable: %s", error)
-            return "Installed Core identity: unavailable"
+            return "Installed ComfyUI environment: unavailable"
+
+    def _environment_problem(self) -> str | None:
+        try:
+            self.paths.validate_runtime()
+        except (LayoutError, OSError) as error:
+            return str(error)
+        return None
+
+    def _environment_is_absent(self) -> bool:
+        return not self.paths.comfyui.exists() and not self.paths.comfyui.is_symlink()
+
+    def _show_environment_required(self, problem: str) -> None:
+        missing = self._environment_is_absent()
+        title = (
+            "ComfyUI environment not installed"
+            if missing
+            else "ComfyUI environment unavailable"
+        )
+        instruction = (
+            "Download the environment descriptor and every numbered part into "
+            "one directory, then choose Environment → Install local environment… "
+            "and select either the .parts.json descriptor or any .partNNNN file."
+        )
+        detail = instruction if missing else f"{problem}\n\n{instruction}"
+        self.window.load_html(_page(title, detail, error=not missing))
 
     def closing(self) -> bool:
         self._closing.set()
@@ -366,8 +512,8 @@ def _menu(controller: DesktopController) -> list[Any]:
         ),
         Menu("View", [MenuAction("Reload", controller.reload)]),
         Menu(
-            "Core",
-            [MenuAction("Install complete bundle…", controller.install_bundle)],
+            "Environment",
+            [MenuAction("Install local environment…", controller.install_bundle)],
         ),
         Menu("Help", [MenuAction("About Portable Comfy", controller.about)]),
     ]
@@ -446,9 +592,14 @@ def _run_desktop(
     *,
     no_auto_start: bool,
     desktop_smoke: bool = False,
+    bootstrap_smoke: bool = False,
 ) -> int:
     import webview
 
+    # Construct the application before pywebview creates its native menu bar.
+    # Host desktop palettes are not reliable inside an AppImage and can otherwise
+    # produce black menu text over the launcher's dark window chrome.
+    qt_application = _apply_qt_dark_theme()
     window = webview.create_window(
         "Portable Comfy",
         html=_page("Portable Comfy", "Preparing the local ComfyUI server…", busy=True),
@@ -469,6 +620,7 @@ def _run_desktop(
         updater,
         auto_start=not no_auto_start,
         desktop_smoke=desktop_smoke,
+        bootstrap_smoke=bootstrap_smoke,
     )
     window.events.closing += controller.closing
 
@@ -505,6 +657,8 @@ def _run_desktop(
         storage_path=str(storage),
         menu=_menu(controller),
     )
+    # Keep the Python wrapper alive for the entire Qt event loop.
+    del qt_application
     supervisor.stop()
     return 0 if not desktop_smoke or controller.smoke_success is True else 2
 
@@ -538,6 +692,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-custom-nodes", action="store_true")
     parser.add_argument("--no-auto-start", action="store_true")
     parser.add_argument(
+        "--install-environment",
+        type=Path,
+        metavar="DESCRIPTOR_OR_PART",
+        help=(
+            "validate and install a local complete environment descriptor, "
+            "numbered part, or legacy tar.gz, then exit"
+        ),
+    )
+    parser.add_argument(
         "--no-webview", action="store_true", help="run only the managed server"
     )
     parser.add_argument(
@@ -547,6 +710,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--desktop-smoke-test",
         action="store_true",
         help="run the externally validated Qt desktop smoke protocol",
+    )
+    parser.add_argument(
+        "--desktop-bootstrap-smoke-test",
+        action="store_true",
+        help="externally validate the launcher-only setup screen and exit",
     )
     parser.add_argument(
         "--self-test", action="store_true", help="validate layout without a runtime"
@@ -560,12 +728,30 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.no_auto_start and (args.smoke_test or args.desktop_smoke_test):
+    if args.no_auto_start and (
+        args.smoke_test or args.desktop_smoke_test or args.desktop_bootstrap_smoke_test
+    ):
         parser.error("smoke tests require automatic server startup")
-    if args.smoke_test and args.desktop_smoke_test:
-        parser.error("choose either --smoke-test or --desktop-smoke-test")
-    if args.desktop_smoke_test and args.no_webview:
-        parser.error("--desktop-smoke-test cannot be combined with --no-webview")
+    if (
+        sum(
+            bool(value)
+            for value in (
+                args.smoke_test,
+                args.desktop_smoke_test,
+                args.desktop_bootstrap_smoke_test,
+            )
+        )
+        > 1
+    ):
+        parser.error("choose only one smoke-test mode")
+    if (
+        args.desktop_smoke_test or args.desktop_bootstrap_smoke_test
+    ) and args.no_webview:
+        parser.error("desktop smoke tests cannot be combined with --no-webview")
+    if args.install_environment and (
+        args.smoke_test or args.desktop_smoke_test or args.desktop_bootstrap_smoke_test
+    ):
+        parser.error("--install-environment cannot be combined with a smoke test")
     try:
         paths = PortablePaths.discover(args.root)
         if args.self_test:
@@ -582,17 +768,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             paths.create_layout()
             configure_logging(paths)
             EnvironmentUpdater.recover_interrupted_update(paths)
-            paths.validate_runtime()
-            repaired = paths.repair_runtime_metadata()
-            if repaired:
-                LOGGER.info("repaired %d portable Python metadata files", repaired)
-                EnvironmentUpdater.reseal_active_environment(paths)
-            node_runtime_changes = paths.ensure_node_runtime()
-            if node_runtime_changes:
-                LOGGER.info(
-                    "initialized or rebound persistent custom-node venv (%d changes)",
-                    node_runtime_changes,
-                )
             supervisor = ServerSupervisor(
                 paths,
                 port=args.port,
@@ -602,6 +777,50 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             atexit.register(supervisor.stop)
             try:
+                if args.install_environment:
+                    result = EnvironmentUpdater(paths, supervisor).install_bundle(
+                        args.install_environment
+                    )
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "version": result.version,
+                                "commit": result.commit,
+                                "generation_id": result.generation_id,
+                            },
+                            indent=2,
+                        )
+                    )
+                    return 0
+
+                runtime_problem: LayoutError | OSError | None = None
+                try:
+                    paths.validate_runtime()
+                except (LayoutError, OSError) as error:
+                    runtime_problem = error
+                if runtime_problem is None:
+                    repaired = paths.repair_runtime_metadata()
+                    if repaired:
+                        LOGGER.info(
+                            "repaired %d portable Python metadata files", repaired
+                        )
+                        EnvironmentUpdater.reseal_active_environment(paths)
+                    node_runtime_changes = paths.ensure_node_runtime()
+                    if node_runtime_changes:
+                        LOGGER.info(
+                            "initialized or rebound persistent custom-node venv "
+                            "(%d changes)",
+                            node_runtime_changes,
+                        )
+                elif args.no_webview and not args.no_auto_start:
+                    raise runtime_problem
+                else:
+                    LOGGER.info(
+                        "starting launcher without an active ComfyUI environment: %s",
+                        runtime_problem,
+                    )
+
                 if args.no_webview or args.smoke_test:
                     return _run_headless(
                         supervisor,
@@ -612,7 +831,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     paths,
                     supervisor,
                     no_auto_start=args.no_auto_start,
-                    desktop_smoke=args.desktop_smoke_test,
+                    desktop_smoke=(
+                        args.desktop_smoke_test or args.desktop_bootstrap_smoke_test
+                    ),
+                    bootstrap_smoke=args.desktop_bootstrap_smoke_test,
                 )
             finally:
                 supervisor.stop()

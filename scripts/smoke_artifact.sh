@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the packaged ComfyUI from a relocated artifact and probe API/frontend.
+# Install multipart ComfyUI into the standalone artifact, then probe API/frontend.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 target="${1:-}"
-shift || true
+environment_source="${2:-}"
+shift 2 || true
 timeout_seconds=180
 allow_no_gpu=0
 desktop_backend=xcb
@@ -20,10 +21,12 @@ while (($#)); do
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$target" ]] \
-  || die "usage: $0 PATH_TO_TARBALL [--timeout N] [--allow-no-gpu] [--native-wayland]"
+[[ -n "$target" && -n "$environment_source" ]] \
+  || die "usage: $0 LAUNCHER_TARBALL ENVIRONMENT_DESCRIPTOR_OR_PART [--timeout N] [--allow-no-gpu] [--native-wayland]"
 target="$(absolute_path "$target")"
-[[ -f "$target" ]] || die "smoke test expects the complete tar.gz artifact"
+environment_source="$(absolute_path "$environment_source")"
+[[ -f "$target" && -f "$environment_source" ]] \
+  || die "smoke test expects the standalone tar.gz and environment descriptor/part"
 require_command curl python3 setsid
 
 # The spaces are intentional: this is the relocation/path-safety test.
@@ -57,6 +60,23 @@ tar -xzf "$target" -C "$temporary" --no-same-owner --no-same-permissions
 root="$temporary/Portable-Comfy"
 [[ -d "$root" ]] || die "archive top-level directory is not Portable-Comfy"
 "$SCRIPT_DIR/preflight_portable.sh" "$root"
+
+appimage="$root/Portable-Comfy.AppImage"
+install_log="$root/logs/environment-install-smoke.log"
+install_command=("$appimage" --install-environment "$environment_source")
+if ((allow_no_gpu)); then
+  install_command+=(--cpu)
+fi
+log "installing the downloaded environment through the standalone AppImage"
+if ! env APPIMAGE_EXTRACT_AND_RUN=1 PORTABLE_COMFY_ROOT="$root" \
+  "${install_command[@]}" >"$install_log" 2>&1; then
+  sed -n '1,260p' "$install_log" >&2
+  die "standalone AppImage could not install the downloaded environment"
+fi
+[[ -s "$root/ComfyUI/main.py" && -s "$root/ComfyUI/frontend/index.html" \
+   && -s "$root/manifest/environment.json" ]] \
+  || die "AppImage installer did not activate a complete ComfyUI environment"
+python3 "$SCRIPT_DIR/verify_environment_bundle.py" "$root" --portable-root
 
 python="$root/ComfyUI/runtime/python/bin/python-portable"
 port="$("$python" - <<'PY'
@@ -117,7 +137,6 @@ kill -TERM -- "-$server_pid"
 wait "$server_pid" || true
 server_pid=""
 
-appimage="$root/Portable-Comfy.AppImage"
 desktop_log="$root/logs/desktop-smoke.log"
 desktop_command=("$appimage" --desktop-smoke-test --disable-custom-nodes)
 if ((allow_no_gpu)); then

@@ -69,6 +69,47 @@ def make_environment(root: Path, *, frozen_requirements: str | None = None) -> P
     (comfyui / "frontend/THIRD_PARTY_NOTICES.md").write_text(
         "Frontend notices\n", encoding="utf-8"
     )
+    frontend_notices = comfyui / "frontend/LICENSES/npm/example-1.0.0"
+    frontend_notices.mkdir(parents=True)
+    (frontend_notices / "LICENSE").write_text(
+        "Example frontend dependency license\n", encoding="utf-8"
+    )
+    frontend_metadata = {
+        "name": "example-frontend-dependency",
+        "version": "1.0.0",
+        "license": "MIT",
+        "notice_files": ["example-1.0.0/LICENSE"],
+    }
+    (frontend_notices / "PACKAGE-METADATA.json").write_text(
+        json.dumps(frontend_metadata), encoding="utf-8"
+    )
+    (comfyui / "frontend/LICENSES/npm/packages.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "frontend": {
+                    "version": PINNED["FRONTEND_VERSION"],
+                    "commit": PINNED["FRONTEND_COMMIT"],
+                },
+                "packages": [
+                    {
+                        **frontend_metadata,
+                        "metadata_file": "example-1.0.0/PACKAGE-METADATA.json",
+                    }
+                ],
+                "summary": {
+                    "distributions": 1,
+                    "with_notice_files": 1,
+                    "metadata_only": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (
+        comfyui
+        / f"frontend/SOURCE-ComfyUI-frontend-{PINNED['FRONTEND_VERSION']}.tar.gz"
+    ).write_bytes(b"pinned frontend source\n")
     (comfyui / "runtime/requirements.lock").write_bytes(CONSTRAINTS.read_bytes())
     (comfyui / "runtime/python/LICENSE.txt").write_text(
         "CPython license\n", encoding="utf-8"
@@ -211,6 +252,34 @@ def test_manifest_covers_core_runtime_and_relative_links(tmp_path: Path) -> None
     checksums = (root / "manifest/environment-checksums.sha256").read_text()
     assert "ComfyUI/main.py" in checksums
     assert "ComfyUI/main-link.py" not in checksums
+
+
+def test_verifier_binds_compiled_only_dependency_assets(tmp_path: Path) -> None:
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
+    comfyui = make_environment(root)
+    asset = comfyui / "frontend/fonts/example.woff2"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"compiled font bytes")
+    inventory_path = comfyui / "frontend/LICENSES/npm/packages.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory["packages"][0]["bundled_assets"] = [
+        {
+            "path": "fonts/example.woff2",
+            "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
+            "size": asset.stat().st_size,
+        }
+    ]
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    assert generate(root).returncode == 0
+    checked = verify(root)
+    assert checked.returncode == 0, checked.stderr
+
+    inventory["packages"][0]["bundled_assets"][0]["sha256"] = "0" * 64
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    assert generate(root).returncode == 0
+    checked = verify(root)
+    assert checked.returncode != 0
+    assert "bundled asset disagrees" in checked.stderr
 
 
 def test_verifier_rejects_tampering_and_persistent_payload(tmp_path: Path) -> None:
