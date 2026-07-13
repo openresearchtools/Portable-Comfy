@@ -273,3 +273,71 @@ def test_same_internal_payload_through_multiple_alias_directories_is_not_ambiguo
     )
     assert selected == target.resolve()
     assert patched == {alias_directory.resolve()}
+
+
+def test_identical_internal_payload_copies_prefer_existing_soname_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = (tmp_path / "python").resolve()
+    binary = prefix / "torchaudio/lib/_torchaudio.so"
+    canonical = prefix / "nvidia/cu13/lib/libcudart.so.13"
+    vendored = prefix / "torchvision.libs/libcudart.hash.so.13"
+    for path in (binary, canonical, vendored):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            b"\x7fELFconsumer" if path == binary else b"\x7fELFidentical-cudart"
+        )
+    soname = "libcudart.so.13"
+    patched: set[Path] = set()
+
+    monkeypatch.setattr(
+        closure,
+        "set_relative_rpaths",
+        lambda path, directories: patched.update(directories),
+    )
+    monkeypatch.setattr(
+        closure,
+        "ldd_resolutions",
+        lambda path: ({soname: canonical.resolve()}, "canonical CUDA runtime"),
+    )
+
+    selected = closure.prefer_internal_dependency(
+        binary,
+        soname,
+        [
+            closure.InternalCandidate(canonical.resolve(), canonical.parent.resolve()),
+            closure.InternalCandidate(vendored.resolve(), vendored.parent.resolve()),
+        ],
+        prefix,
+    )
+
+    assert selected == canonical.resolve()
+    assert patched == {canonical.parent.resolve()}
+    assert not (vendored.parent / soname).exists()
+
+
+def test_different_internal_payload_copies_remain_ambiguous(
+    tmp_path: Path,
+) -> None:
+    prefix = (tmp_path / "python").resolve()
+    binary = prefix / "consumer/libconsumer.so"
+    first = prefix / "wheel-a/libduplicate-a.so"
+    second = prefix / "wheel-b/libduplicate-b.so"
+    for path, payload in (
+        (binary, b"\x7fELFconsumer"),
+        (first, b"\x7fELFfirst"),
+        (second, b"\x7fELFsecond"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    with pytest.raises(closure.ClosureError, match="2 distinct hashes"):
+        closure.prefer_internal_dependency(
+            binary,
+            "libduplicate.so.1",
+            [
+                closure.InternalCandidate(first.resolve(), first.parent.resolve()),
+                closure.InternalCandidate(second.resolve(), second.parent.resolve()),
+            ],
+            prefix,
+        )

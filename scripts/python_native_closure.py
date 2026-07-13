@@ -558,12 +558,13 @@ def prefer_internal_dependency(
 ) -> Path:
     candidates = [candidate for candidate in candidates if candidate.target != binary]
     targets = {candidate.target for candidate in candidates}
-    if len(targets) != 1:
+    payload_hashes = {sha256(target) for target in targets}
+    if not targets or len(payload_hashes) != 1:
         raise ClosureError(
             f"ambiguous in-prefix dependency {soname} in {binary}: "
-            f"{len(targets)} payload candidates"
+            f"{len(targets)} payload candidates with "
+            f"{len(payload_hashes)} distinct hashes"
         )
-    target = targets.pop()
     existing: list[InternalCandidate] = []
     creatable: list[InternalCandidate] = []
     for candidate in candidates:
@@ -575,8 +576,10 @@ def prefer_internal_dependency(
             alias_target = alias.resolve(strict=True)
         except (OSError, RuntimeError):
             continue
-        if alias_target == target:
-            existing.append(candidate)
+        if alias_target in targets:
+            existing.append(
+                InternalCandidate(target=alias_target, directory=candidate.directory)
+            )
     usable = existing or creatable
     if not usable:
         raise ClosureError(
