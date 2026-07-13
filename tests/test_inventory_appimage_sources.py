@@ -520,6 +520,7 @@ def test_portable_preflight_revalidates_complete_native_notice_inventory() -> No
     assert 'inventory_appimage_sources.py"' in preflight
     assert '--verify "$native_notices"' in preflight
     assert '--python-native-license-root "$python_native_notices"' in preflight
+    assert '"portable-python-native"' in preflight
     for required in (
         "common-licenses.tsv",
         "SHA256SUMS",

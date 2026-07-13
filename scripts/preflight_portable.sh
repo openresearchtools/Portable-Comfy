@@ -309,6 +309,7 @@ assert set(provenance[0]) == {
 }
 allowed = {
     "relative-reference", "launcher-venv", "portable-python",
+    "portable-python-native",
     "pyinstaller-build", "build-generated", "project-source",
     "debian-host-package",
 }
