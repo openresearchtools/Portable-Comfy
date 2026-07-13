@@ -230,10 +230,47 @@ def set_relative_rpaths(binary: Path, extra_directories: set[Path]) -> None:
         run(["patchelf", "--remove-rpath", str(binary)])
 
 
+def package_query_paths(path: Path) -> list[Path]:
+    """Return canonical and usrmerge-compatible dpkg database spellings.
+
+    Ubuntu 22.04 can resolve ``/lib`` to ``/usr/lib`` while its dpkg database
+    still records a library under the legacy ``/lib`` spelling. Newer Ubuntu
+    releases record the canonical spelling instead. Query both without
+    weakening the later resolved-path equality check.
+    """
+
+    candidates: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    add(path.resolve())
+    add(path)
+    aliases = (
+        (Path("/usr/bin"), Path("/bin")),
+        (Path("/usr/lib"), Path("/lib")),
+        (Path("/usr/lib64"), Path("/lib64")),
+        (Path("/usr/sbin"), Path("/sbin")),
+    )
+    for candidate in tuple(candidates):
+        for canonical, legacy in aliases:
+            try:
+                suffix = candidate.relative_to(canonical)
+            except ValueError:
+                try:
+                    suffix = candidate.relative_to(legacy)
+                except ValueError:
+                    continue
+                add(canonical / suffix)
+            else:
+                add(legacy / suffix)
+    return candidates
+
+
 def package_owner(path: Path) -> DebianOwner:
-    candidates = [path.resolve(), path]
     package = ""
-    for candidate in candidates:
+    for candidate in package_query_paths(path):
         completed = run(["dpkg-query", "-S", str(candidate)], check=False)
         if completed.returncode != 0:
             continue

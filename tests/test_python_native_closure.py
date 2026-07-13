@@ -32,6 +32,50 @@ def test_origin_entry_is_relative_to_each_consumer(tmp_path: Path) -> None:
     assert not closure.is_origin_rpath("relative/to/current-directory")
 
 
+def test_package_query_paths_include_both_usrmerge_spellings() -> None:
+    canonical = Path("/usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4")
+
+    candidates = closure.package_query_paths(canonical)
+
+    assert canonical in candidates
+    assert Path("/lib/x86_64-linux-gnu/libbz2.so.1.0.4") in candidates
+
+
+def test_package_owner_accepts_legacy_usrmerge_database_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = Path("/usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4")
+
+    def completed(
+        command: list[str], *, check: bool = True, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        del check, env
+        if command[:2] == ["dpkg-query", "-S"]:
+            if command[2] == "/lib/x86_64-linux-gnu/libbz2.so.1.0.4":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "libbz2-1.0:amd64: /lib/x86_64-linux-gnu/libbz2.so.1.0.4\n",
+                    "",
+                )
+            return subprocess.CompletedProcess(command, 1, "", "not found")
+        assert command[:2] == ["dpkg-query", "-W"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "libbz2-1.0:amd64\t1.0.8-5build1\tamd64\tbzip2\t1.0.8-5build1\n",
+            "",
+        )
+
+    monkeypatch.setattr(closure, "run", completed)
+
+    owner = closure.package_owner(canonical)
+
+    assert owner.package == "libbz2-1.0:amd64"
+    assert owner.source_package == "bzip2"
+    assert owner.version == "1.0.8-5build1"
+
+
 def test_ldd_parser_preserves_paths_with_spaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
