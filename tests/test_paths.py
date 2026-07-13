@@ -12,6 +12,9 @@ import pytest
 from portable_comfy.paths import LayoutError, PortablePaths
 
 
+REPO = Path(__file__).resolve().parents[1]
+
+
 def _write_probe_wheel(directory: Path, version: str) -> Path:
     wheel = directory / f"portable_base_probe-{version}-py3-none-any.whl"
     dist_info = f"portable_base_probe-{version}.dist-info"
@@ -143,6 +146,10 @@ def test_environment_discards_pyinstaller_and_virtualenv_paths(
     assert env["CM_USE_PYGIT2"] == "1"
     assert "PIP_TARGET" not in env
     assert str(portable_root.custom_node_bin) in env["PATH"]
+    assert env["PATH"].split(os.pathsep)[0] == str(portable_root.custom_node_bin)
+    assert shutil.which("pip", path=env["PATH"]) == str(
+        portable_root.custom_node_bin / "pip"
+    )
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
@@ -205,6 +212,19 @@ def test_node_runtime_is_unseeded_system_site_packages_venv(
     assert not Path(completed.stdout.strip()).is_relative_to(
         portable_root.custom_node_runtime
     )
+    for name in ("pip", "pip3"):
+        wrapper = portable_root.custom_node_bin / name
+        assert wrapper.is_file()
+        assert os.access(wrapper, os.X_OK)
+        assert 'exec "$bindir/python" -s -m pip "$@"' in wrapper.read_text()
+        pip_version = subprocess.run(
+            [str(wrapper), "--version"],
+            env=portable_root.server_environment(),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert "pip " in pip_version.stdout
 
 
 def test_legacy_target_directory_is_migrated_into_node_venv(
@@ -339,14 +359,16 @@ def test_node_venv_pip_shadows_base_then_upgrades_without_duplicate_metadata(
     )
     environment = portable_root.server_environment()
 
-    for version in ("1.0", "2.0"):
+    for index, version in enumerate(("1.0", "2.0")):
         wheel = _write_probe_wheel(tmp_path, version)
+        installer = (
+            [str(portable_root.custom_node_bin / "pip")]
+            if index == 0
+            else [str(portable_root.custom_node_python), "-s", "-m", "pip"]
+        )
         completed = subprocess.run(
             [
-                str(portable_root.custom_node_python),
-                "-s",
-                "-m",
-                "pip",
+                *installer,
                 "install",
                 "--no-deps",
                 "--disable-pip-version-check",
@@ -453,6 +475,20 @@ def test_runtime_metadata_repair_handles_move_and_new_pip_scripts(
     assert (paths.python_prefix / ".portable-comfy-prefix").read_text().strip() == str(
         paths.python_prefix
     )
+
+
+def test_relocation_hook_keeps_native_build_paths_in_the_base_runtime() -> None:
+    repair_script = (REPO / "scripts/repair_python_runtime.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_current_base_prefix = os.path.realpath(sys.base_prefix)" in repair_script
+    assert "_rewrite(_value, _old_prefix, _current_base_prefix)" in repair_script
+    assert (
+        'for _key in ("prefix", "exec_prefix", "installed_base", '
+        '"installed_platbase"):' in repair_script
+    )
+    assert 'for _key in ("base", "platbase"):' in repair_script
 
 
 def test_runtime_repair_relocates_persistent_node_entrypoints(

@@ -1,0 +1,156 @@
+diff --git a/src/runtime/runtime.c b/src/runtime/runtime.c
+index 2ebb3c8..81f17b8 100644
+--- a/src/runtime/runtime.c
++++ b/src/runtime/runtime.c
+@@ -970,7 +970,7 @@ bool rm_recursive(const char* const path) {
+     // FTW_MOUNT: prevent deletion of files on other mounted filesystems
+     // FTW_PHYS: do not follow symlinks, but report symlinks as such; this way, the symlink targets, which might point
+     //           to locations outside path will not be deleted accidentally (attackers might abuse this)
+-    int rv = nftw(path, &rm_recursive_callback, 0, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
++    int rv = nftw(path, &rm_recursive_callback, 16, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+ 
+     return rv == 0;
+ }
+@@ -1578,40 +1578,37 @@ int main(int argc, char* argv[]) {
+     }
+ 
+     if (getenv("APPIMAGE_EXTRACT_AND_RUN") != NULL || (arg && strcmp(arg, "appimage-extract-and-run") == 0)) {
+-        char* hexlified_digest = NULL;
+-
+-        // calculate MD5 hash of file, and use it to make extracted directory name "content-aware"
+-        // see https://github.com/AppImage/AppImageKit/issues/841 for more information
+-        {
+-            FILE* f = fopen(appimage_path, "rb");
+-            if (f == NULL) {
+-                perror("Failed to open AppImage file");
+-                exit(EXIT_EXECERROR);
+-            }
+-
+-            Md5Context ctx;
+-            Md5Initialise(&ctx);
+-
+-            char buf[4096];
+-            size_t bytes_read;
+-            while ((bytes_read = fread(buf, sizeof(char), sizeof(buf), f)) > 0) {
+-                Md5Update(&ctx, buf, (uint32_t) bytes_read);
+-            }
+-
+-            MD5_HASH digest;
+-            Md5Finalise(&ctx, &digest);
+-
+-            hexlified_digest = appimage_hexlify((const char*)digest.bytes, sizeof(digest.bytes));
++        /* Upstream normally reuses a content-addressed directory directly under
++         * TMPDIR. A different local user can pre-create same-size files there,
++         * and concurrent invocations share the same tree. Always extract below
++         * an atomically created 0700 directory owned by this invocation. */
++        char private_temp_dir[PATH_MAX];
++        int template_length = snprintf(private_temp_dir, sizeof(private_temp_dir),
++                                       "%s/.portable-comfy-appimage-XXXXXX", temp_base);
++        if (template_length < 0 || (size_t)template_length >= sizeof(private_temp_dir)) {
++            fprintf(stderr, "Temporary directory path is too long\n");
++            exit(EXIT_EXECERROR);
++        }
++        if (mkdtemp(private_temp_dir) == NULL) {
++            perror("Failed to create private extraction directory");
++            exit(EXIT_EXECERROR);
+         }
+ 
+-        char* prefix = malloc(strlen(temp_base) + 20 + strlen(hexlified_digest) + 2);
+-        strcpy(prefix, temp_base);
+-        strcat(prefix, "/appimage_extracted_");
+-        strcat(prefix, hexlified_digest);
+-        free(hexlified_digest);
++        char* prefix = malloc(strlen(private_temp_dir) + strlen("/payload") + 1);
++        if (prefix == NULL) {
++            rmdir(private_temp_dir);
++            fprintf(stderr, "Failed to allocate extraction path\n");
++            exit(EXIT_EXECERROR);
++        }
++        strcpy(prefix, private_temp_dir);
++        strcat(prefix, "/payload");
+ 
+         if (!extract_appimage(appimage_path, prefix, NULL, false, verbose)) {
+             fprintf(stderr, "Failed to extract AppImage\n");
++            if (access(prefix, F_OK) == 0)
++                rm_recursive(prefix);
++            rmdir(private_temp_dir);
++            free(prefix);
+             exit(EXIT_EXECERROR);
+         }
+ 
+@@ -1619,6 +1616,9 @@ int main(int argc, char* argv[]) {
+         if ((pid = fork()) == -1) {
+             int error = errno;
+             fprintf(stderr, "fork() failed: %s\n", strerror(error));
++            rm_recursive(prefix);
++            rmdir(private_temp_dir);
++            free(prefix);
+             exit(EXIT_EXECERROR);
+         } else if (pid == 0) {
+             const char apprun_fname[] = "AppRun";
+@@ -1658,12 +1658,18 @@ int main(int argc, char* argv[]) {
+         int rv = waitpid(pid, &status, 0);
+         status = rv > 0 && WIFEXITED (status) ? WEXITSTATUS (status) : EXIT_EXECERROR;
+ 
+-        if (getenv("NO_CLEANUP") == NULL) {
++        {
+             if (!rm_recursive(prefix)) {
+                 fprintf(stderr, "Failed to clean up cache directory\n");
+                 if (status == 0)        /* avoid messing existing failure exit status */
+                     status = EXIT_EXECERROR;
+             }
++            if (rmdir(private_temp_dir) != 0) {
++                fprintf(stderr, "Failed to remove private extraction directory: %s\n",
++                        strerror(errno));
++                if (status == 0)
++                    status = EXIT_EXECERROR;
++            }
+         }
+ 
+         // template == prefix, must be freed only once
+@@ -1793,7 +1799,37 @@ int main(int argc, char* argv[]) {
+ 
+         dir_fd = open(mount_dir, O_RDONLY);
+         if (dir_fd == -1) {
+-            perror("open dir error");
++            int open_error = errno;
++            fprintf(stderr,
++                    "FUSE mount unavailable (%s); falling back to temporary "
++                    "AppImage extraction.\n",
++                    strerror(open_error));
++            close(keepalive_pipe[0]);
++            rmdir(mount_dir);
++            /* Prefer the AppImage's own directory for extraction. It is known
++             * to permit execution because this file was launched from there,
++             * and a normal portable installation is writable by its user. */
++            char fallback_temp_base[PATH_MAX];
++            strcpy(fallback_temp_base, fullpath);
++            char* final_separator = strrchr(fallback_temp_base, '/');
++            if (final_separator != NULL) {
++                if (final_separator == fallback_temp_base)
++                    final_separator[1] = '\0';
++                else
++                    *final_separator = '\0';
++            }
++            if (final_separator != NULL && access(fallback_temp_base, W_OK | X_OK) == 0) {
++                setenv("TMPDIR", fallback_temp_base, 1);
++            } else {
++                const char* runtime_dir = getenv("XDG_RUNTIME_DIR");
++                if (runtime_dir != NULL && access(runtime_dir, W_OK | X_OK) == 0)
++                    setenv("TMPDIR", runtime_dir, 1);
++            }
++            setenv("APPIMAGE_EXTRACT_AND_RUN", "1", 1);
++            execv(fullpath, argv);
++            open_error = errno;
++            fprintf(stderr, "Failed to restart AppImage in extraction mode: %s\n",
++                    strerror(open_error));
+             exit(EXIT_EXECERROR);
+         }
+ 
+diff --git a/src/runtime/version b/src/runtime/version
+index 317189b..16d53ad 100644
+--- a/src/runtime/version
++++ b/src/runtime/version
+@@ -1 +1 @@
+-UNSUPPORTED_LOCAL_DEVELOPER_BUILD
++type2-runtime-dd6cebedcbddde9c82f89b011e8e1d40b6e43868+portable-comfy-private-extract-v2

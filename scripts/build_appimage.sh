@@ -26,9 +26,12 @@ venv="$work_dir/launcher-venv"
 tool="$work_dir/appimagetool-x86_64.AppImage"
 runtime_file="$work_dir/runtime-x86_64"
 runtime_license="$work_dir/AppImage-runtime-LICENSE"
+runtime_source_bundle="$work_dir/AppImage-runtime-source"
 chromium_license="$work_dir/QtWebEngine-Chromium-LICENSE"
 qtwebengine_notices="$work_dir/Qt-${QT_RUNTIME_VERSION}-notices"
 proxy_tools_license="$work_dir/proxy-tools-LICENSE.txt"
+python_native_source="$portable_root/ComfyUI/runtime/LICENSES/python-native"
+python_native_notices="$appdir/usr/share/licenses/python-native"
 output="$portable_root/Portable-Comfy.AppImage"
 
 require_command "$build_python" awk cmp curl dpkg-query ldconfig sha256sum
@@ -64,6 +67,9 @@ safe_rm_tree "$venv"
 mkdir -p -- "$work_dir" "$appdir/usr/lib/portable-comfy" "$appdir/usr/bin" \
   "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/scalable/apps" \
   "$appdir/usr/share/licenses/native-packages"
+[[ -s "$python_native_source/packages.json" ]] \
+  || die "portable Python native dependency inventory is missing"
+cp -a -- "$python_native_source" "$python_native_notices"
 
 "$build_python" -m venv "$venv"
 "$venv/bin/python" -m pip install --disable-pip-version-check --upgrade \
@@ -136,8 +142,10 @@ done
 # Audit every source in PyInstaller's final COLLECT operation. Known build
 # trees are tied to their aggregate notices; every other absolute input must
 # be owned by dpkg, and brings its exact package/version/copyright into the
-# bundle. The Wayland libraries are recorded separately because they are
-# copied for Qt's dlopen path after PyInstaller has written its TOC.
+# bundle. Files frozen from portable Python's native closure must match its
+# checksum/package inventory and point at the complete copied notice tree. The
+# Wayland libraries are recorded separately because they are copied for Qt's
+# dlopen path after PyInstaller has written its TOC.
 inventory_command=(
   "$venv/bin/python" "$SCRIPT_DIR/inventory_appimage_sources.py"
   --toc "$collect_toc"
@@ -147,6 +155,7 @@ inventory_command=(
   --pyinstaller-work "$work_dir/pyinstaller-work"
   --build-root "$work_dir"
   --repository "$REPO_ROOT"
+  --python-native-license-root "$python_native_notices"
 )
 for library in "${wayland_libraries[@]}"; do
   inventory_command+=(
@@ -210,7 +219,9 @@ if summary != expected:
 PY
 
 download_verified "$APPIMAGETOOL_URL" "$tool" "$APPIMAGETOOL_SHA256"
-download_verified "$APPIMAGE_RUNTIME_URL" "$runtime_file" "$APPIMAGE_RUNTIME_SHA256"
+"$SCRIPT_DIR/build_appimage_runtime.sh" "$runtime_file" \
+  --work-dir "$work_dir/appimage-runtime-build" \
+  --source-bundle "$runtime_source_bundle"
 download_verified "$APPIMAGE_RUNTIME_LICENSE_URL" "$runtime_license" \
   "$APPIMAGE_RUNTIME_LICENSE_SHA256"
 download_verified "$QTWEBENGINE_CHROMIUM_LICENSE_URL" "$chromium_license" \
@@ -228,6 +239,8 @@ download_verified "$QTWEBENGINE_CHROMIUM_LICENSE_URL" "$chromium_license" \
   --qtwebengine-commit "$QTWEBENGINE_SOURCE_COMMIT" \
   --chromium-commit "$QTWEBENGINE_CHROMIUM_COMMIT"
 cp -- "$runtime_license" "$appdir/usr/share/licenses/AppImage-runtime-MIT.txt"
+cp -a -- "$runtime_source_bundle" \
+  "$appdir/usr/share/licenses/AppImage-runtime-source"
 cp -- "$chromium_license" \
   "$appdir/usr/share/licenses/QtWebEngine-Chromium-BSD-3-Clause.txt"
 cp -a -- "$qtwebengine_notices" \
@@ -237,12 +250,17 @@ cp -a -- "$qtwebengine_notices" \
 # The duplicate text compresses well and avoids requiring AppImage extraction
 # just to read redistribution terms.
 rm -rf -- "$portable_root/LICENSES/launcher-python-packages" \
-  "$portable_root/LICENSES/launcher-native-packages"
+  "$portable_root/LICENSES/launcher-native-packages" \
+  "$portable_root/LICENSES/python-native"
 cp -a -- "$appdir/usr/share/licenses/python-packages" \
   "$portable_root/LICENSES/launcher-python-packages"
 cp -a -- "$appdir/usr/share/licenses/native-packages" \
   "$portable_root/LICENSES/launcher-native-packages"
+cp -a -- "$python_native_notices" "$portable_root/LICENSES/python-native"
 cp -- "$runtime_license" "$portable_root/LICENSES/AppImage-runtime-MIT.txt"
+rm -rf -- "$portable_root/LICENSES/AppImage-runtime-source"
+cp -a -- "$appdir/usr/share/licenses/AppImage-runtime-source" \
+  "$portable_root/LICENSES/AppImage-runtime-source"
 cp -- "$chromium_license" \
   "$portable_root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt"
 rm -rf -- "$portable_root/LICENSES/Qt-${QT_RUNTIME_VERSION}-attributions"

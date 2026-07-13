@@ -199,6 +199,19 @@ def make_bundle(
         ),
         encoding="utf-8",
     )
+    native_license_root = core / "runtime/LICENSES/python-native"
+    native_license_root.mkdir(parents=True)
+    (native_license_root / "packages.json").write_text(
+        json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
+    )
+    exclusions_root = core / "runtime/LICENSES/runtime-exclusions"
+    exclusions_root.mkdir(parents=True)
+    (exclusions_root / "README.md").write_text(
+        "Fixture runtime exclusions.\n", encoding="utf-8"
+    )
+    (exclusions_root / "nvshmem-plugin-exclusions.json").write_text(
+        json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
+    )
     if not omit_frozen_requirements:
         default_freeze = "".join(
             f"{package['name'].replace('-', '_')}=="
@@ -682,6 +695,9 @@ def test_archive_root_version_must_match_manifest(
         "frontend/THIRD_PARTY_NOTICES.md",
         "runtime/python/LICENSE.txt",
         "runtime/LICENSES/python-packages/packages.json",
+        "runtime/LICENSES/python-native/packages.json",
+        "runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json",
+        "runtime/LICENSES/runtime-exclusions/README.md",
     ],
 )
 def test_complete_core_bundle_requires_redistribution_notices(

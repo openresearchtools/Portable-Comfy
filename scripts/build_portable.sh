@@ -80,9 +80,19 @@ Notices for the frozen launcher packages (including PyWebView, PyInstaller,
 PyQt6, Qt and Qt WebEngine) are under launcher-python-packages/. Notices and
 a complete provenance.tsv ledger for every PyInstaller source are under
 launcher-native-packages/. Its packages.tsv binds every Debian-owned host
-input to the copied package copyright and exact version. The embedded AppImage
+input to the copied package copyright and exact version. Every Debian
+/usr/share/common-licenses reference is mirrored under common-licenses/ and
+mapped in common-licenses.tsv; SHA256SUMS authenticates the complete native
+notice inventory. python-native/ contains the complete checksum-bound Debian
+notice/common-license inventory for build-host libraries frozen from the
+portable interpreter's lib/portable-native/ closure. The embedded AppImage
 type-2 runtime notice is AppImage-runtime-MIT.txt. Qt-*-attributions/ mirrors
 the version-pinned Qt and Qt WebEngine/Chromium third-party attribution pages.
+AppImage-runtime-source/ is a self-verifying source/relink bundle for the
+statically linked AppImage runtime. It contains exact source archives and
+license texts for musl, libfuse, squashfuse, zstd, zlib and mimalloc; the
+Alpine package recipes and applied patches; both project patches; build-input
+metadata; and the runtime object needed to relink a modified LGPL libfuse.
 EOF
 "$SCRIPT_DIR/install_builtin_models.sh" "$portable_root"
 
@@ -115,8 +125,12 @@ if ((skip_appimage == 0)); then
     "$portable_root/LICENSES/launcher-python-packages"
   cp -a -- "$environment_root/LICENSES/launcher-native-packages" \
     "$portable_root/LICENSES/launcher-native-packages"
+  cp -a -- "$environment_root/LICENSES/python-native" \
+    "$portable_root/LICENSES/python-native"
   cp -- "$environment_root/LICENSES/AppImage-runtime-MIT.txt" \
     "$portable_root/LICENSES/AppImage-runtime-MIT.txt"
+  cp -a -- "$environment_root/LICENSES/AppImage-runtime-source" \
+    "$portable_root/LICENSES/AppImage-runtime-source"
   cp -- "$environment_root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt" \
     "$portable_root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt"
   cp -a -- "$environment_root/LICENSES/Qt-${QT_RUNTIME_VERSION}-attributions" \

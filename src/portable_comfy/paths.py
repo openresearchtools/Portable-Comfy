@@ -332,9 +332,11 @@ class PortablePaths:
     def ensure_node_runtime(self, python_prefix: Path | None = None) -> int:
         """Create, rebind, and validate the persistent custom-node venv.
 
-        Creation needs no network and deliberately omits a private pip copy.
-        The venv inherits pip, Torch, and Core dependencies from the active
-        replaceable runtime through ``--system-site-packages``. Packages later
+        Creation needs no network and deliberately omits a private pip package.
+        Tiny venv-local command wrappers invoke its Python with ``-m pip`` so
+        even installers that call bare ``pip`` cannot mutate the replaceable
+        base. The venv inherits pip, Torch, and Core dependencies from the
+        active runtime through ``--system-site-packages``. Packages later
         installed by nodes live in the venv and retain normal pip metadata.
         """
 
@@ -568,6 +570,7 @@ class PortablePaths:
         except (FileNotFoundError, OSError, ValueError):
             previous = self.root
         changed = 0
+        self.custom_node_bin.mkdir(parents=True, exist_ok=True)
         base_binary = prefix / "bin" / "python3"
         if not base_binary.exists():
             base_binary = self.python_executable(prefix=prefix)
@@ -583,6 +586,31 @@ class PortablePaths:
             if path.exists() or path.is_symlink():
                 path.unlink()
             path.symlink_to(target)
+            changed += 1
+        pip_wrapper = (
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'bindir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)\n'
+            'exec "$bindir/python" -s -m pip "$@"\n'
+        )
+        pip_names = (
+            "pip",
+            "pip3",
+            f"pip{self._python_abi(selected_version)[0]}.{self._python_abi(selected_version)[1]}",
+        )
+        for name in pip_names:
+            path = self.custom_node_bin / name
+            try:
+                current = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                current = ""
+            executable = path.is_file() and os.access(path, os.X_OK)
+            if current == pip_wrapper and executable:
+                continue
+            if path.exists() or path.is_symlink():
+                path.unlink()
+            path.write_text(pip_wrapper, encoding="utf-8")
+            path.chmod(0o755)
             changed += 1
         bin_locations = (
             (self.custom_node_bin, "python"),

@@ -98,17 +98,167 @@ if ((structural == 0)); then
   appimage="$root/Portable-Comfy.AppImage"
   [[ -x "$appimage" ]] || die "AppImage is missing or not executable"
   launcher_notices="$root/LICENSES/launcher-python-packages/packages.json"
-  native_provenance="$root/LICENSES/launcher-native-packages/provenance.tsv"
-  native_packages="$root/LICENSES/launcher-native-packages/packages.tsv"
+  native_notices="$root/LICENSES/launcher-native-packages"
+  native_provenance="$native_notices/provenance.tsv"
+  native_packages="$native_notices/packages.tsv"
+  native_common_licenses="$native_notices/common-licenses.tsv"
+  native_checksums="$native_notices/SHA256SUMS"
+  python_native_notices="$root/LICENSES/python-native"
   qtwebengine_notices="$root/LICENSES/Qt-${QT_RUNTIME_VERSION}-attributions"
+  runtime_bundle="$root/LICENSES/AppImage-runtime-source"
+  runtime_source="$runtime_bundle/sources/type2-runtime-${APPIMAGE_RUNTIME_COMMIT}.tar.gz"
+  runtime_patch="$runtime_bundle/patches/appimage-runtime-fuse-fallback.patch"
+  runtime_dependencies_patch="$runtime_bundle/patches/appimage-runtime-dependencies.patch"
   [[ -s "$root/LICENSES/CPython-PSF-2.0.txt" \
      && -s "$root/LICENSES/AppImage-runtime-MIT.txt" \
+     && -s "$runtime_source" \
+     && -s "$runtime_patch" \
+     && -s "$runtime_dependencies_patch" \
+     && -s "$runtime_bundle/README.md" \
+     && -s "$runtime_bundle/RELINKING.md" \
+     && -s "$runtime_bundle/COMPONENTS.tsv" \
+     && -s "$runtime_bundle/SHA256SUMS" \
+     && -s "$runtime_bundle/relink/runtime.o" \
      && -s "$root/LICENSES/QtWebEngine-Chromium-BSD-3-Clause.txt" \
      && -s "$qtwebengine_notices/MODULE-LICENSES/GFDL-1.3-no-invariants-only.txt" \
      && -s "$launcher_notices" \
      && -s "$native_provenance" \
-     && -s "$native_packages" ]] \
+     && -s "$native_packages" \
+     && -s "$native_common_licenses" \
+     && -s "$native_checksums" \
+     && -s "$native_notices/FORMAT" \
+     && -s "$native_notices/README.txt" \
+     && -s "$python_native_notices/packages.json" \
+     && -s "$python_native_notices/README.md" ]] \
     || die "AppImage redistribution notices are incomplete"
+  python3 "$SCRIPT_DIR/inventory_appimage_sources.py" \
+    --verify "$native_notices" \
+    --python-native-license-root "$python_native_notices" \
+    || die "launcher native dependency notice verification failed"
+  printf '%s  %s\n' "$APPIMAGE_RUNTIME_SOURCE_SHA256" "$runtime_source" \
+    | sha256sum -c -
+  (cd -- "$runtime_bundle" && sha256sum --check --strict SHA256SUMS)
+  cmp -- "$REPO_ROOT/packaging/appimage-runtime-fuse-fallback.patch" \
+    "$runtime_patch" \
+    || die "shipped AppImage runtime patch differs from the project source"
+  cmp -- "$REPO_ROOT/packaging/appimage-runtime-dependencies.patch" \
+    "$runtime_dependencies_patch" \
+    || die "shipped AppImage dependency patch differs from the project source"
+  python3 - "$runtime_bundle" <<'PY'
+import csv
+import os
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+manifest_path = root / "SHA256SUMS"
+manifest_files = set()
+for line in manifest_path.read_text(encoding="utf-8").splitlines():
+    digest, separator, relative = line.partition("  ")
+    assert separator and re.fullmatch(r"[0-9a-f]{64}", digest)
+    path = pathlib.PurePosixPath(relative)
+    assert not path.is_absolute() and ".." not in path.parts
+    manifest_files.add(path.as_posix())
+actual_files = {
+    path.relative_to(root).as_posix()
+    for path in root.rglob("*")
+    if path.is_file() and path != manifest_path
+}
+assert manifest_files == actual_files
+
+with (root / "COMPONENTS.tsv").open(encoding="utf-8", newline="") as stream:
+    rows = list(csv.DictReader(stream, delimiter="\t"))
+expected_versions = {
+    "type2-runtime": os.environ["APPIMAGE_RUNTIME_COMMIT"],
+    "musl": os.environ["APPIMAGE_RUNTIME_MUSL_VERSION"],
+    "libfuse": os.environ["APPIMAGE_RUNTIME_LIBFUSE_VERSION"],
+    "squashfuse": os.environ["APPIMAGE_RUNTIME_SQUASHFUSE_VERSION"],
+    "zstd": os.environ["APPIMAGE_RUNTIME_ZSTD_VERSION"],
+    "zlib": os.environ["APPIMAGE_RUNTIME_ZLIB_VERSION"],
+    "mimalloc": os.environ["APPIMAGE_RUNTIME_MIMALLOC_VERSION"],
+}
+assert {row["component"]: row["version"] for row in rows} == expected_versions
+assert next(row for row in rows if row["component"] == "libfuse")["license"] == "LGPL-2.1-only"
+
+expected_packages = {
+    *(
+        f"{name}-{os.environ['APPIMAGE_RUNTIME_MUSL_VERSION']}"
+        for name in ("musl", "musl-dev")
+    ),
+    *(
+        f"{name}-{os.environ['APPIMAGE_RUNTIME_ZSTD_VERSION']}"
+        for name in ("zstd", "zstd-libs", "zstd-dev", "zstd-static")
+    ),
+    *(
+        f"{name}-{os.environ['APPIMAGE_RUNTIME_ZLIB_VERSION']}"
+        for name in ("zlib", "zlib-dev", "zlib-static")
+    ),
+    *(
+        f"{name}-{os.environ['APPIMAGE_RUNTIME_MIMALLOC_VERSION']}"
+        for name in (
+            "mimalloc2", "mimalloc2-dev", "mimalloc2-debug",
+            "mimalloc2-insecure",
+        )
+    ),
+}
+actual_packages = set(
+    (root / "build-inputs/runtime-apk-packages.txt")
+    .read_text(encoding="utf-8")
+    .splitlines()
+)
+assert actual_packages == expected_packages
+all_build_packages = set(
+    (root / "build-inputs/runtime-all-build-packages.txt")
+    .read_text(encoding="utf-8")
+    .splitlines()
+)
+assert actual_packages <= all_build_packages
+
+static_paths = set()
+for line in (root / "build-inputs/runtime-static-libraries.sha256").read_text(
+    encoding="utf-8"
+).splitlines():
+    match = re.fullmatch(r"[0-9a-f]{64}  (/.+)", line)
+    assert match
+    static_paths.add(match.group(1))
+assert static_paths == {
+    "/usr/lib/libc.a", "/usr/lib/libfuse3.a",
+    "/usr/local/lib/libsquashfuse.a",
+    "/usr/local/lib/libsquashfuse_ll.a", "/usr/lib/libzstd.a",
+    "/usr/lib/libz.a", "/usr/lib/libmimalloc.a",
+}
+crt_paths = set()
+for line in (root / "build-inputs/runtime-crt-objects.sha256").read_text(
+    encoding="utf-8"
+).splitlines():
+    match = re.fullmatch(r"[0-9a-f]{64}  (/.+)", line)
+    assert match
+    crt_paths.add(match.group(1))
+assert crt_paths == {"/usr/lib/rcrt1.o", "/usr/lib/crti.o", "/usr/lib/crtn.o"}
+trace_paths = set(
+    (root / "build-inputs/runtime-link.trace").read_text(encoding="utf-8").splitlines()
+)
+assert trace_paths == static_paths | crt_paths | {"runtime.o"}
+link_map = (root / "build-inputs/runtime-link.map").read_text(encoding="utf-8")
+assert "/usr/lib/gcc/" not in link_map and "libgcc" not in link_map
+dynamic_section = (root / "build-inputs/runtime-dynamic-section.txt").read_text(
+    encoding="utf-8"
+)
+assert "(NEEDED)" not in dynamic_section
+runtime_object = (root / "relink/runtime.o").read_bytes()
+assert runtime_object[:6] == b"\x7fELF\x02\x01"
+assert runtime_object[16:20] == b"\x01\x00\x3e\x00"
+
+required_notices = {
+    "type2-runtime-MIT.txt", "musl-COPYRIGHT.txt",
+    "libfuse-LICENSE.txt", "libfuse-LGPL-2.1.txt",
+    "libfuse-GPL-2.0.txt", "squashfuse-BSD-2-Clause.txt",
+    "zstd-BSD-3-Clause.txt", "zstd-GPL-2.0.txt", "zlib.txt",
+    "mimalloc-MIT.txt",
+}
+assert required_notices <= {path.name for path in (root / "licenses").iterdir()}
+PY
   python3 "$SCRIPT_DIR/qtwebengine_notices.py" "$qtwebengine_notices" \
     --url "$QT_LICENSES_USED_URL" \
     --webengine-url "$QTWEBENGINE_NOTICES_URL" \
@@ -228,6 +378,8 @@ assert not any(
 PY
   file -Lb "$appimage" | grep -q 'ELF 64-bit.*x86-64' \
     || die "AppImage is not an x86-64 ELF"
-  APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --appimage-version >/dev/null
+  runtime_identity="$("$appimage" --appimage-version 2>&1)"
+  grep -Fq 'portable-comfy-private-extract-v2' <<<"$runtime_identity" \
+    || die "AppImage does not contain the patched no-FUSE runtime"
 fi
 log "standalone launcher preflight passed: $root"

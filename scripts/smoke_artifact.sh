@@ -68,7 +68,7 @@ if ((allow_no_gpu)); then
   install_command+=(--cpu)
 fi
 log "installing the downloaded environment through the standalone AppImage"
-if ! env APPIMAGE_EXTRACT_AND_RUN=1 PORTABLE_COMFY_ROOT="$root" \
+if ! env -u APPIMAGE_EXTRACT_AND_RUN PORTABLE_COMFY_ROOT="$root" \
   "${install_command[@]}" >"$install_log" 2>&1; then
   sed -n '1,260p' "$install_log" >&2
   die "standalone AppImage could not install the downloaded environment"
@@ -209,7 +209,7 @@ fi
 log "starting the actual AppImage desktop smoke on $desktop_backend with loopback DevTools"
 setsid env \
   "${desktop_environment[@]}" \
-  APPIMAGE_EXTRACT_AND_RUN=1 \
+  -u APPIMAGE_EXTRACT_AND_RUN \
   PORTABLE_COMFY_ROOT="$root" \
   PORTABLE_COMFY_DESKTOP_SMOKE_READY="$frontend_ready" \
   PORTABLE_COMFY_DESKTOP_SMOKE_ACK="$surface_ack" \

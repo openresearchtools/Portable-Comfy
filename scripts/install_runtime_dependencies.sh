@@ -191,6 +191,23 @@ assert importlib.util.find_spec("pygit2") is not None
 print(json.dumps({"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda}))
 PY
 
+# The CUDA wheel includes optional NVSHMEM cluster plugins whose MPI/PMIx,
+# OpenSHMEM, fabric, UCX and InfiniBand stacks are intentionally supplied by an
+# HPC site rather than the wheel. Remove only the exact reviewed plugin bytes;
+# retain core/device/UID/local functionality and record every exclusion.
+runtime_exclusions="$comfyui_root/runtime/LICENSES/runtime-exclusions"
+python3 "$SCRIPT_DIR/prune_runtime_plugins.py" prune "$prefix" \
+  --manifest-root "$runtime_exclusions"
+
+# Wheels can add ELF extensions and helper executables.  Recompute the complete
+# closure after installation so no package can silently inherit a non-ABI
+# library from the Ubuntu build runner.  This also refreshes exact Debian
+# package/version/notices for every copied shared library.
+python3 "$SCRIPT_DIR/python_native_closure.py" bundle "$prefix" \
+  --license-root "$comfyui_root/runtime/LICENSES/python-native"
+python3 "$SCRIPT_DIR/prune_runtime_plugins.py" finalize "$prefix" \
+  --manifest-root "$runtime_exclusions"
+
 # pip has just generated console scripts, so perform relocation repair last.
 "$SCRIPT_DIR/repair_python_runtime.sh" "$prefix"
 log "installed and validated ComfyUI/CUDA runtime dependencies"

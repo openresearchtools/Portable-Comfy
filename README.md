@@ -173,10 +173,11 @@ their documented host prerequisites.
   path to avoid the Qt/Wayland EGL failure reproduced on NVIDIA. A hardened
   Wayland session with no `DISPLAY` automatically uses native Qt Wayland. The
   renderer is bundled, so system WebKitGTK is not required.
-- FUSE 2 for normal double-click AppImage mounting (`libfuse2` on Ubuntu 22.04
-  or `libfuse2t64` on Ubuntu 24.04/26.04). If FUSE is unavailable, the same
-  file can run with `--appimage-extract-and-run` at the cost of temporary
-  extraction on every launch.
+- FUSE is optional. The pinned AppImage runtime uses a normal read-only FUSE
+  mount when the host permits it, but automatically restarts in temporary
+  extraction mode when mounting is unavailable or blocked. Double-click stays
+  one-click in either case; the fallback costs extra startup time and temporary
+  disk space while the application is open.
 - Enough free storage for the extracted runtime, user models and outputs.
   Large generation models are not shipped; only the small TAESD preview
   weights described above are bundled.
@@ -204,7 +205,9 @@ Build scripts and artifact verification are documented in
 [Building and testing](docs/building.md). The repository has one deliberately
 manual workflow: **Actions → Build portable artifacts → Run workflow**. It
 builds and non-interactively preflights the launcher archive and multipart Core
-payload, without GUI smoke jobs on hosted runners.
+payload. A no-network/no-FUSE container invokes the frozen launcher's
+`--version` path to prove automatic extraction and cleanup; the workflow still
+has no hosted-runner GUI smoke job.
 
 ## License
 
@@ -222,5 +225,14 @@ native Ubuntu libraries copied into the launcher. The standalone notice tree
 also contains the checksum-pinned Qt 6.11.1 attribution mirror and exact
 QtWebEngine module license set. The native notice directory
 includes a complete PyInstaller-source provenance ledger and an exact Debian
-package/version/copyright ledger; an unclassified absolute build input is a
-hard build failure.
+package/version/copyright ledger; all Debian common-license references are
+mirrored with package mappings and complete SHA-256 coverage, so the copied
+copyright files have no unshipped common-license texts. An unclassified
+absolute build input is a hard build failure. Native libraries PyInstaller
+freezes from the private interpreter must match its checksum/package inventory;
+the complete `LICENSES/python-native/` notice tree ships both inside and beside
+the AppImage. A self-verifying AppImage runtime
+source/relink bundle ships exact sources and notices for all six statically
+linked libraries, Alpine packaging patches, both runtime patches, build-input
+ledgers and the object needed to relink a modified LGPL libfuse beside the
+runtime's MIT notice.

@@ -33,6 +33,14 @@ force termination when necessary.
 The launcher owns the process it starts. It must not kill an unrelated process
 that was already listening on the configured port.
 
+The pinned type-2 AppImage runtime first attempts its normal read-only FUSE
+mount. A source-shipped patch handles mount failure by re-executing the same
+file in temporary extraction mode. Every explicit or automatic extraction uses
+an invocation-private 0700 temporary tree and removes it after the application
+exits. This preserves fast mounting where available while keeping
+direct/double-click launch functional on hardened systems and containers that
+deny FUSE mounts without sharing predictable extraction paths.
+
 ## Atomic environment and persistent data
 
 The top-level `ComfyUI/` directory is one self-contained generation:
@@ -47,11 +55,55 @@ ComfyUI/
 │   └── LICENSES/npm/             # production dependency notices + inventory
 └── runtime/
     ├── python/                   # source-built CPython + locked packages
-    │   └── LICENSE.txt           # upstream PSF license beside CPython
+    │   ├── LICENSE.txt           # upstream PSF license beside CPython
+    │   └── lib/portable-native/  # replaceable non-glibc ELF dependency closure
     ├── requirements.lock         # exact committed constraints
     ├── installed-requirements.txt
-    └── LICENSES/python-packages/ # wheel notices + packages.json inventory
+    └── LICENSES/
+        ├── python-packages/      # wheel notices + packages.json inventory
+        ├── python-native/        # exact Debian versions + native notices
+        └── runtime-exclusions/   # checksum-bound optional-plugin policy
 ```
+
+CPython and every native wheel executable/extension are audited as one ELF
+closure after dependency installation. Each dependency other than the explicit
+glibc/kernel ABI and NVIDIA's `libcuda.so.1`/`libnvidia-ml.so.1` driver entry
+points must resolve inside `runtime/python/`. Build-host libraries are copied
+separately into `lib/portable-native/`; consumers and copied libraries receive
+only `$ORIGIN`-relative RUNPATH entries, so the closure survives arbitrary
+directory moves. `LICENSES/python-native/packages.json` binds each copied file
+to its exact Debian binary/source package version and installed copyright,
+license and notice files. Every `/usr/share/common-licenses/*` text referenced
+by those notices is copied and checksum-bound too, so the artifact never points
+at a license that exists only on the builder. The shared objects remain
+individually replaceable.
+
+The pinned `nvidia-nvshmem-cu13` wheel also contains optional bootstrap and
+transport plugins for external MPI, PMI/PMIx, OpenSHMEM, InfiniBand/DevX,
+libfabric and UCX cluster stacks. Portable Comfy validates their exact wheel
+version, RECORD entries, paths, sizes and upstream SHA-256 values before
+removing them; it never captures a hosted runner's unrelated HPC installation.
+`LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json` records every
+removed object and checksum-binds the retained post-repair core/device and UID
+bootstrap objects. The UID/local CUDA IPC/P2P workstation path remains. This
+portable build deliberately does not support NVSHMEM multi-node execution or
+scheduler/HPC bootstrap and network transports. Both artifact verification and
+the updater require the policy manifest and its explanatory README.
+
+The AppImage freezes a small copy of that interpreter for the launcher itself.
+Any PyInstaller input below `runtime/python/lib/portable-native/` is classified
+as `portable-python-native`, never as CPython-only: its relative path, SHA-256,
+size, Debian package and package version must match the native inventory or the
+build fails. The complete checksum-bound `python-native/` notice and
+common-license tree is copied both inside the AppImage and beside it in the
+standalone `LICENSES/` directory, and standalone preflight revalidates its exact
+file coverage before accepting the artifact.
+
+The private interpreter intentionally omits Tk, readline, gdbm/dbm and CPython
+test-only extension modules. They are unused by the ComfyUI server; omitting
+them avoids an X11/Tcl stack and GPL readline/gdbm libraries while retaining
+ssl/hashlib, sqlite, ctypes, bz2/lzma, expat, curses and uuid for Core and custom
+nodes.
 
 The public **Core bundle** swaps that complete directory. In this project,
 "Core bundle" explicitly includes the matching frontend, private interpreter,
@@ -125,7 +177,13 @@ frontend version and requires every package in the filtered production pnpm
 closure to have a nonempty, manifested notice. Dependencies embedded directly
 in compiled JavaScript or font assets are recorded separately with exact asset
 hashes and notices. Runtime wheels have the same all-packages-noticed invariant
-under `runtime/LICENSES/python-packages/`.
+under `runtime/LICENSES/python-packages/`. Native libraries have an independent,
+checksum-bound Debian provenance and notice inventory under
+`runtime/LICENSES/python-native/`; artifact preflight reruns `ldd` with loader
+override variables removed across every ELF and rejects every unresolved or
+non-policy host dependency. It also revalidates the exact NVSHMEM local-runtime
+exclusion policy and rejects a missing, changed, reintroduced or unreviewed
+plugin.
 
 For transport, the logical `.tar.gz` is split into ordered files of at most
 1.9 GB plus a JSON descriptor. The descriptor binds the logical archive name,

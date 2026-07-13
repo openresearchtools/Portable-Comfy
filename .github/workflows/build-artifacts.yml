@@ -107,6 +107,7 @@ jobs:
             libxcb-util1 \
             libxcb-xkb1 \
             libxkbcommon-x11-0 \
+            patch \
             patchelf \
             pkg-config \
             rsync \
@@ -123,6 +124,12 @@ jobs:
           scripts/build_portable.sh \
             --output-dir "$GITHUB_WORKSPACE/artifacts" \
             --work-dir "$RUNNER_TEMP/portable-build"
+
+      - name: Smoke automatic AppImage fallback without FUSE
+        shell: bash
+        run: |
+          scripts/smoke_appimage_fuse_fallback.sh \
+            "$RUNNER_TEMP/portable-build/Portable-Comfy/Portable-Comfy.AppImage"
 
       - name: Build replaceable complete ComfyUI archive
         shell: bash

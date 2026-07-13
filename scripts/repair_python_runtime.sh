@@ -82,8 +82,10 @@ done < <(find "$prefix/bin" -maxdepth 1 -type f -name 'python*-config' -print0)
 
 # sysconfig's generated build dictionary retains configure-time paths. This
 # hook rewrites those values in memory from their stale prefix to the current
-# executable-derived prefix. It contains no build path itself and therefore
-# continues to work after any number of moves.
+# executable-derived base prefix. Inside the persistent custom-node venv,
+# install paths remain rooted in sys.prefix while headers, libpython and build
+# metadata correctly remain rooted in sys.base_prefix. It contains no build
+# path itself and therefore continues to work after any number of moves.
 site_packages="$prefix/lib/python${PYTHON_VERSION%.*}/site-packages"
 mkdir -p -- "$site_packages"
 cat >"$site_packages/sitecustomize.py" <<'PY'
@@ -105,6 +107,7 @@ def _rewrite(value: str, old: str, new: str) -> str:
 
 
 _current_prefix = os.path.realpath(sys.prefix)
+_current_base_prefix = os.path.realpath(sys.base_prefix)
 _variables = sysconfig.get_config_vars()
 _stale_prefixes = {
     os.path.realpath(value)
@@ -115,10 +118,13 @@ for _key, _value in tuple(_variables.items()):
     if not isinstance(_value, str):
         continue
     for _old_prefix in _stale_prefixes:
-        if _old_prefix != _current_prefix:
-            _value = _rewrite(_value, _old_prefix, _current_prefix)
+        if _old_prefix not in {_current_prefix, _current_base_prefix}:
+            _value = _rewrite(_value, _old_prefix, _current_base_prefix)
     _variables[_key] = _value
-for _key in ("prefix", "exec_prefix", "base", "platbase", "installed_base", "installed_platbase"):
+for _key in ("prefix", "exec_prefix", "installed_base", "installed_platbase"):
+    if _key in _variables:
+        _variables[_key] = _current_base_prefix
+for _key in ("base", "platbase"):
     if _key in _variables:
         _variables[_key] = _current_prefix
 PY
@@ -158,7 +164,7 @@ bindir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 prefix=$(CDPATH= cd -- "$bindir/.." && pwd -P)
 export PYTHONHOME="$prefix"
 export PYTHONNOUSERSITE=1
-export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$prefix/lib:$prefix/lib/portable-native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$bindir/python3" -s "$@"
 EOF
 cat >"$prefix/bin/pip-portable" <<'EOF'

@@ -28,10 +28,15 @@ For a full build on Ubuntu, install the native CPython/AppImage prerequisites:
 sudo apt-get update
 sudo apt-get install --no-install-recommends \
   build-essential curl desktop-file-utils file git libbz2-dev libexpat1-dev \
-  libffi-dev libgdbm-dev liblzma-dev libncursesw5-dev libreadline-dev \
-  libsqlite3-dev libssl-dev patchelf pkg-config rsync squashfs-tools tk-dev \
+  libffi-dev liblzma-dev libncursesw5-dev libsqlite3-dev libssl-dev \
+  patch patchelf pkg-config rsync squashfs-tools \
   uuid-dev xz-utils zlib1g-dev
 ```
+
+A complete local AppImage build also needs a working Docker Engine. The pinned
+upstream type-2 runtime uses its own Alpine build recipe to produce a static
+x86-64 ELF after the project applies the automatic no-FUSE fallback patch.
+GitHub-hosted runners already provide Docker.
 
 ## Build scripts
 
@@ -48,6 +53,9 @@ scripts/build_environment_bundle.sh \
 
 scripts/preflight_portable.sh \
   artifacts/Portable-Comfy-linux-x86_64.tar.gz
+
+scripts/smoke_appimage_fuse_fallback.sh \
+  /build/Portable-Comfy/Portable-Comfy.AppImage
 
 scripts/preflight_environment.sh \
   artifacts/Portable-Comfy-core-v0.27.0.tar.gz
@@ -129,6 +137,16 @@ manifest. This prevents ordinary transitive-version drift. The artifacts are
 not claimed to be byte-for-byte reproducible because all wheel bytes and build
 tools are not yet hash-locked.
 
+After installation, the build applies the pinned local-workstation NVSHMEM
+policy before constructing the portable ELF closure. Only the exact optional
+MPI/PMIx/OpenSHMEM/InfiniBand/libfabric/UCX plugins reviewed for the pinned
+`nvidia-nvshmem-cu13` wheel may be removed. The resulting
+`runtime/LICENSES/runtime-exclusions/` manifest preserves their upstream
+hashes, records the retained post-RUNPATH-repair hashes and states the lost
+multi-node/HPC capability. Preflight verifies that record and refuses drift in
+the wheel version, RECORD, file set, checksums, capabilities or retained UID
+workstation path.
+
 `packaging/versions.env` is the authoritative mapping for a generation. For a
 future upstream ComfyUI release, update `COMFY_VERSION` and `COMFY_TAG` to the
 release, pin `COMFY_COMMIT` to that tag's exact commit, and update its archive
@@ -166,10 +184,14 @@ Actions tab. It performs these gates:
 2. Builds the standalone launcher while retaining its completed environment
    source tree, then creates the full-Core archive from those exact environment
    bytes without reinstalling dependencies.
-3. Preflights the launcher and complete environment without launching a
+3. Runs `AppImage --version` in a pinned, read-only Ubuntu 22.04 container with
+   no network and no `/dev/fuse`. This headless gate must observe the automatic
+   extraction fallback, reach the actual frozen launcher and leave no extraction
+   directory behind; it does not initialize Qt or a desktop.
+4. Preflights the launcher and complete environment without launching a
    desktop, then splits the Core archive into 1.9-GB-or-smaller transport files
    and records SHA-256 values in the job log.
-4. Uploads the launcher tarball and one multipart Core artifact containing the
+5. Uploads the launcher tarball and one multipart Core artifact containing the
    descriptor and parts, with one-day retention and no redundant compression.
 
 The AppImage build also treats PyInstaller's final `COLLECT-00.toc` as the
@@ -179,17 +201,57 @@ Wayland libraries) and `packages.tsv` for every Debian-owned host input. An
 absolute source outside the launcher venv, portable CPython, repository and
 build-output trees must be owned by an installed Debian package or the build
 fails; each such package contributes its version and Debian copyright file.
+Every `/usr/share/common-licenses/` path referenced by those copyright files
+is parsed strictly and mirrored as a regular file under `common-licenses/`.
+`common-licenses.tsv` records package-to-text mappings, including explicit
+resolution of Debian's historical `GPL-N.0`/`LGPL-N.0` path aliases and compact
+brace lists. `SHA256SUMS` covers the ledgers, every copyright file and every
+mirrored license text; standalone preflight checks both complete file coverage
+and every digest. The existing `provenance.tsv` and `packages.tsv` schemas are
+unchanged; `FORMAT` identifies the augmented inventory format.
+PyInstaller inputs from the private interpreter's
+`lib/portable-native/` directory take a stricter path before the generic
+portable-Python classification. Each must exactly match a library path,
+SHA-256, size, Debian package and package version in
+`runtime/LICENSES/python-native/packages.json`; an absent, modified or unlisted
+library is a build failure. That complete checksum-bound notice/common-license
+tree is copied to `LICENSES/python-native/` inside the AppImage and in the
+outer standalone archive. Preflight validates the copied tree and cross-checks
+every `portable-python-native` provenance row against it.
 PyWebView's package hook contributes only its required JavaScript. Unused GTK,
 Android, Cocoa and WinForms backends and cross-platform binary payloads are
 excluded from the Qt-only launcher.
+
+The type-2 AppImage runtime is built from commit
+`dd6cebedcbddde9c82f89b011e8e1d40b6e43868`, not downloaded as an opaque
+prebuilt runtime. `packaging/appimage-runtime-fuse-fallback.patch` preserves
+normal FUSE mounting when available, restarts a failed mount in extraction
+mode, and makes every extract-and-run invocation use an invocation-private
+0700 temporary tree with complete cleanup. The x86-64 build base is Alpine
+3.21.7 pinned by OCI manifest digest. Its linked APK inputs are pinned to musl
+1.2.5-r11, zstd 1.5.6-r2, zlib 1.3.2-r0 and mimalloc2 2.1.7-r0; libfuse
+3.15.0 and squashfuse 0.5.2 are built from checksum-pinned upstream archives.
+
+`LICENSES/AppImage-runtime-source/` is a self-verifying compliance and source
+bundle. It contains every linked component's exact source and license, the
+Alpine aports recipes and patches corresponding to the installed packages,
+both Portable Comfy patches, the complete build-container and linked-package
+ledgers, hashes of every static library and musl CRT input, the final linker
+map/trace, and the pre-link `runtime.o`. The latter and the complete MIT
+runtime source satisfy the non-library relinking-material side of libfuse's
+LGPL v2.1 static-link terms; `RELINKING.md` gives the reconstruction and
+modified-libfuse relink procedure. Preflight rejects an incomplete, altered or
+version-mismatched bundle.
 
 `LICENSES/Qt-6.11.1-attributions/` mirrors the two pinned official Qt license
 indexes, all 281 linked Qt/Chromium attribution pages, and the exact 12-file
 QtWebEngine module license set. Its checksum manifests and source commits are
 validated both during the build and by standalone preflight.
 
-The workflow has one build job. It does not install Xvfb or Weston, emulate a
-desktop, launch Qt WebEngine, or run GUI smoke tests on a hosted runner.
+The workflow has one build job. Its only AppImage execution is the deterministic
+headless `--version` fallback gate above. It does not install Xvfb or Weston,
+emulate a desktop, initialize Qt WebEngine, or run GUI smoke tests on a hosted
+runner.
 
 GitHub's artifact service wraps uploaded files in its own downloadable
 container; `compression-level: 0` avoids trying to recompress the inner
@@ -222,8 +284,14 @@ substitute a smaller CPU package.
 The full-Core preflight verifies archive safety, the complete schema-v2 file
 and symlink manifest, equality with the visible in-folder identity,
 requirements-lock identity, candidate-runtime relocation, pinned imports and a
-freshly compiled native extension. It runs the interpreter inside the candidate
-`ComfyUI/`, never the active/full archive's runtime.
+freshly compiled native extension. It also audits `ldd` resolution for every
+ELF in the interpreter/wheel tree with loader overrides removed, validates the
+exact Debian native-library notice inventory, then creates a temporary
+`--system-site-packages` custom-node venv and compiles/imports the extension
+through that venv. The venv check proves package/script paths stay in the venv
+while headers and `LIBDIR` resolve to the replaceable base interpreter. It runs
+the interpreter inside the candidate `ComfyUI/`, never the active/full
+archive's runtime.
 
 The optional local transactional-update smoke uses `EnvironmentUpdater` itself to stage
 that downloaded archive, run the candidate's version/import, `pip check` and

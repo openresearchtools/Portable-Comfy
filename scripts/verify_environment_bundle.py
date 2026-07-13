@@ -23,6 +23,11 @@ GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}$")
 STRICT_TOP_LEVEL = {"ComfyUI", "manifest", "LICENSES"}
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
+NATIVE_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-native/packages.json"
+RUNTIME_EXCLUSIONS_MANIFEST = (
+    "ComfyUI/runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json"
+)
+RUNTIME_EXCLUSIONS_README = "ComfyUI/runtime/LICENSES/runtime-exclusions/README.md"
 RUNTIME_INSTALLED_REQUIREMENTS = "ComfyUI/runtime/installed-requirements.txt"
 FRONTEND_LICENSE_INVENTORY = "ComfyUI/frontend/LICENSES/npm/packages.json"
 CORE_LICENSE_FILES = (
@@ -33,6 +38,9 @@ CORE_LICENSE_FILES = (
 RUNTIME_LICENSE_FILES = (
     "ComfyUI/runtime/python/LICENSE.txt",
     RUNTIME_LICENSE_INVENTORY,
+    NATIVE_LICENSE_INVENTORY,
+    RUNTIME_EXCLUSIONS_MANIFEST,
+    RUNTIME_EXCLUSIONS_README,
 )
 REQUIRED_RUNTIME_LICENSE_PACKAGES = frozenset(
     {

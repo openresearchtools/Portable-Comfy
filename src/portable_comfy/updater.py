@@ -57,6 +57,11 @@ MAX_UNPACKED_BYTES = 32 * 1024**3
 TRANSACTION_MARKER = "environment-update-transaction.json"
 IDENTITY_NAME = "PORTABLE-COMFY-IDENTITY.json"
 RUNTIME_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-packages/packages.json"
+NATIVE_LICENSE_INVENTORY = "ComfyUI/runtime/LICENSES/python-native/packages.json"
+RUNTIME_EXCLUSIONS_MANIFEST = (
+    "ComfyUI/runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json"
+)
+RUNTIME_EXCLUSIONS_README = "ComfyUI/runtime/LICENSES/runtime-exclusions/README.md"
 RUNTIME_INSTALLED_REQUIREMENTS = "ComfyUI/runtime/installed-requirements.txt"
 FRONTEND_LICENSE_INVENTORY = "ComfyUI/frontend/LICENSES/npm/packages.json"
 REQUIRED_LICENSE_FILES = (
@@ -65,6 +70,9 @@ REQUIRED_LICENSE_FILES = (
     "ComfyUI/frontend/THIRD_PARTY_NOTICES.md",
     "ComfyUI/runtime/python/LICENSE.txt",
     RUNTIME_LICENSE_INVENTORY,
+    NATIVE_LICENSE_INVENTORY,
+    RUNTIME_EXCLUSIONS_MANIFEST,
+    RUNTIME_EXCLUSIONS_README,
 )
 REQUIRED_RUNTIME_LICENSE_PACKAGES = frozenset(
     {

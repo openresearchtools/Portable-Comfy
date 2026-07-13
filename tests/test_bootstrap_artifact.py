@@ -95,9 +95,46 @@ def test_workflow_delivers_bootstrap_and_only_multipart_core_files() -> None:
     )
     assert "python3 scripts/split_archive.py" in workflow
     assert "--part-size 1900000000" in workflow
+    assert "scripts/smoke_appimage_fuse_fallback.sh" in workflow
+    assert (
+        '"$RUNNER_TEMP/portable-build/Portable-Comfy/Portable-Comfy.AppImage"'
+        in workflow
+    )
     assert "artifacts/${{ steps.versions.outputs.core_archive }}.parts.json" in workflow
     assert "artifacts/${{ steps.versions.outputs.core_archive }}.part0*" in workflow
     assert not any(
         line.strip() == "path: artifacts/${{ steps.versions.outputs.core_archive }}"
         for line in workflow.splitlines()
     )
+
+
+def test_no_fuse_smoke_is_headless_isolated_and_checks_cleanup() -> None:
+    script = (REPO / "scripts/smoke_appimage_fuse_fallback.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--network none" in script
+    assert "--tmpfs /tmp:rw,noexec" in script
+    assert "--tmpfs /portable:rw,exec" in script
+    assert "[[ ! -e /dev/fuse ]]" in script
+    assert '"$appimage" --version' in script
+    assert "FUSE mount unavailable (" in script
+    assert "/tmp/appimage_extracted_*" in script
+    assert "/tmp/.portable-comfy-appimage-*" in script
+    assert "/portable/.portable-comfy-appimage-*" in script
+    assert "/tmp/.mount_*" in script
+    assert "APPIMAGE_EXTRACT_AND_RUN was set before invoking" in script
+
+
+def test_runtime_fallback_uses_a_private_per_invocation_extraction_tree() -> None:
+    patch = (REPO / "packaging/appimage-runtime-fuse-fallback.patch").read_text(
+        encoding="utf-8"
+    )
+
+    assert "mkdtemp(private_temp_dir)" in patch
+    assert '"%s/.portable-comfy-appimage-XXXXXX"' in patch
+    assert "rmdir(private_temp_dir)" in patch
+    assert "nftw(path, &rm_recursive_callback, 16" in patch
+    assert '-        if (getenv("NO_CLEANUP") == NULL) {' in patch
+    assert "portable-comfy-private-extract-v2" in patch
+    assert '-        strcat(prefix, "/appimage_extracted_");' in patch

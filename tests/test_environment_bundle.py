@@ -155,6 +155,19 @@ def make_environment(root: Path, *, frozen_requirements: str | None = None) -> P
         default_freeze if frozen_requirements is None else frozen_requirements,
         encoding="utf-8",
     )
+    native_license_root = comfyui / "runtime/LICENSES/python-native"
+    native_license_root.mkdir(parents=True)
+    (native_license_root / "packages.json").write_text(
+        json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
+    )
+    exclusions_root = comfyui / "runtime/LICENSES/runtime-exclusions"
+    exclusions_root.mkdir(parents=True)
+    (exclusions_root / "README.md").write_text(
+        "Fixture runtime exclusions.\n", encoding="utf-8"
+    )
+    (exclusions_root / "nvshmem-plugin-exclusions.json").write_text(
+        json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
+    )
     for name in ("python-portable", "repair-portable-entrypoints"):
         path = comfyui / "runtime/python/bin" / name
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")

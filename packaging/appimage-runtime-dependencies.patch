@@ -1,0 +1,138 @@
+diff --git a/scripts/docker/Dockerfile b/scripts/docker/Dockerfile
+index 07b6533..66304be 100644
+--- a/scripts/docker/Dockerfile
++++ b/scripts/docker/Dockerfile
+@@ -1,13 +1,16 @@
+-FROM alpine:3.21
++FROM alpine:3.21.7@sha256:f27cad9117495d32d067133afff942cb2dc745dfe9163e949f6bfe8a6a245339
+ 
+ # includes dependencies from https://git.alpinelinux.org/aports/tree/main/fuse3/APKBUILD
+ RUN apk add --no-cache \
+     bash alpine-sdk util-linux strace file autoconf automake libtool xz \
+     eudev-dev gettext-dev linux-headers meson \
+-    zstd-dev zstd-static zlib-dev zlib-static clang musl-dev mimalloc-dev
++    zstd-dev=1.5.6-r2 zstd-static=1.5.6-r2 \
++    zlib-dev=1.3.2-r0 zlib-static=1.3.2-r0 clang \
++    musl-dev=1.2.5-r11 mimalloc2-dev=2.1.7-r0
+ 
+ COPY scripts/common/install-dependencies.sh /tmp/scripts/common/install-dependencies.sh
+ COPY patches/ /tmp/patches/
++COPY compliance-sources/ /tmp/compliance-sources/
+ 
+ WORKDIR /tmp
+ RUN bash scripts/common/install-dependencies.sh
+diff --git a/scripts/common/install-dependencies.sh b/scripts/common/install-dependencies.sh
+index 0e21cdb..0024fd0 100755
+--- a/scripts/common/install-dependencies.sh
++++ b/scripts/common/install-dependencies.sh
+@@ -18,11 +18,15 @@ this_dir="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")")"
+ 
+ cd "$tmpdir"
+ 
+-wget https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz
++install -m 0644 /tmp/compliance-sources/fuse-3.15.0.tar.xz .
+ echo "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0  fuse-3.15.0.tar.xz" | sha256sum -c -
+-tar xf fuse-3.*.tar.xz
++tar --no-same-owner -xf fuse-3.*.tar.xz
+ pushd fuse-3*/
+ patch -p1 < "$this_dir"/../../patches/libfuse/mount.c.diff
++sed -i '1a\
++  Modified by AppImage type2-runtime on 2024-11-24: make the\
++  fusermount helper path configurable through FUSERMOUNT_PROG.\
++' lib/mount.c
+ mkdir build
+ cd build
+ meson setup --prefix=/usr ..
+@@ -33,9 +37,9 @@ popd
+ # Minimize binary size
+ export CFLAGS="-ffunction-sections -fdata-sections -Os"
+ 
+-wget "https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz"
++install -m 0644 /tmp/compliance-sources/squashfuse-0.5.2.tar.gz 0.5.2.tar.gz
+ echo "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3  0.5.2.tar.gz" | sha256sum -c -
+-tar xf 0.5.2.tar.gz
++tar --no-same-owner -xf 0.5.2.tar.gz
+ pushd squashfuse-*/
+ ./autogen.sh
+ ./configure LDFLAGS="-static"
+diff --git a/scripts/build-runtime.sh b/scripts/build-runtime.sh
+index 3ce3b91..c61402b 100755
+--- a/scripts/build-runtime.sh
++++ b/scripts/build-runtime.sh
+@@ -20,6 +20,14 @@ pushd src/runtime/
+ make -j"$(nproc)" runtime
+ 
+ file runtime
++cp runtime.o "$out_dir"/runtime.o
++cp runtime-link.map "$out_dir"/runtime-link.map
++cp runtime-link.trace "$out_dir"/runtime-link.trace
++readelf -d runtime > "$out_dir"/runtime-dynamic-section.txt
++if grep -q '(NEEDED)' "$out_dir"/runtime-dynamic-section.txt; then
++    echo "Static runtime unexpectedly contains a DT_NEEDED entry" >&2
++    exit 1
++fi
+ 
+ objcopy --only-keep-debug runtime runtime.debug
+ 
+@@ -60,4 +68,33 @@ echo -ne 'AI\x02' | dd of=runtime-"$architecture" bs=1 count=3 seek=8 conv=no
+ cp runtime-"$architecture" "$out_dir"/
+ cp runtime-"$architecture".debug "$out_dir"/
+ 
++packages=(
++    musl musl-dev
++    zstd zstd-libs zstd-dev zstd-static
++    zlib zlib-dev zlib-static
++    mimalloc2 mimalloc2-dev mimalloc2-debug mimalloc2-insecure
++)
++for package in "${packages[@]}"; do
++    apk info -e "$package" >/dev/null
++    apk list --installed "$package" 2>/dev/null | awk 'NR == 1 { print $1 }'
++done | LC_ALL=C sort -u > "$out_dir"/runtime-apk-packages.txt
++apk list --installed 2>/dev/null | awk '{ print $1 }' \
++    | LC_ALL=C sort -u > "$out_dir"/runtime-all-build-packages.txt
++
++static_libraries=(
++    /usr/lib/libc.a /usr/lib/libfuse3.a
++    /usr/local/lib/libsquashfuse.a /usr/local/lib/libsquashfuse_ll.a
++    /usr/lib/libzstd.a /usr/lib/libz.a /usr/lib/libmimalloc.a
++)
++for library in "${static_libraries[@]}"; do
++    test -f "$library"
++    sha256sum "$library"
++done > "$out_dir"/runtime-static-libraries.sha256
++
++crt_objects=(/usr/lib/rcrt1.o /usr/lib/crti.o /usr/lib/crtn.o)
++for object in "${crt_objects[@]}"; do
++    test -f "$object"
++    sha256sum "$object"
++done > "$out_dir"/runtime-crt-objects.sha256
++
+ ls -al "$out_dir"
+diff --git a/src/runtime/Makefile b/src/runtime/Makefile
+index 9fd4165..242f86a 100644
+--- a/src/runtime/Makefile
++++ b/src/runtime/Makefile
+@@ -1,12 +1,19 @@
+ GIT_COMMIT := $(shell cat version)
+ CC            = clang
+-CFLAGS        = -std=gnu99 -Os -D_FILE_OFFSET_BITS=64 -DGIT_COMMIT=\"$(GIT_COMMIT)\" -T data_sections.ld -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Wall -Werror -static-pie
++CPPFLAGS      = -D_FILE_OFFSET_BITS=64 -DGIT_COMMIT=\"$(GIT_COMMIT)\" -I/usr/local/include/squashfuse -I/usr/include/fuse3
++CFLAGS        = -std=gnu99 -Os -fPIE -ffunction-sections -fdata-sections -Wall -Werror
++LDFLAGS       = -nostdlib -T data_sections.ld -Wl,--gc-sections,-Map=runtime-link.map,--trace -static-pie
++CRT_BEGIN     = /usr/lib/rcrt1.o /usr/lib/crti.o
++CRT_END       = /usr/lib/crtn.o
+ LIBS          = -lsquashfuse -lsquashfuse_ll -lzstd -lz -lfuse3 -lmimalloc
+ 
+ all: runtime
+ 
+-runtime: runtime.c
+-	$(CC) -I/usr/local/include/squashfuse -I/usr/include/fuse3 $(CFLAGS) $^ $(LIBS) -o $@
++runtime: runtime.o data_sections.ld
++	$(CC) $(LDFLAGS) $(CRT_BEGIN) runtime.o -Wl,--start-group $(LIBS) -lc -Wl,--end-group $(CRT_END) -o $@ > runtime-link.trace
++
++runtime.o: runtime.c
++	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+ 
+ clean:
+-	rm -f runtime
++	rm -f runtime runtime.o

@@ -82,15 +82,18 @@ if ((structural == 0)); then
   repair="$prefix/bin/repair-portable-entrypoints"
   [[ -x "$python" && -x "$repair" ]] || die "portable environment runtime is incomplete"
   [[ -s "$prefix/LICENSE.txt" \
-     && -s "$root/ComfyUI/runtime/LICENSES/python-packages/packages.json" ]] \
+     && -s "$root/ComfyUI/runtime/LICENSES/python-packages/packages.json" \
+     && -s "$root/ComfyUI/runtime/LICENSES/python-native/packages.json" \
+     && -s "$root/ComfyUI/runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json" ]] \
     || die "CPython or runtime-package redistribution notices are missing"
   "$repair"
   [[ "$(cat "$prefix/.portable-comfy-prefix")" == "$(realpath "$prefix")" ]] \
     || die "environment runtime prefix stamp was not repaired"
-  if ldd "$prefix/bin/python3" | grep -q 'not found'; then
-    ldd "$prefix/bin/python3" >&2
-    die "environment Python has unresolved libraries"
-  fi
+  require_command cc ldd readelf
+  python3 "$SCRIPT_DIR/prune_runtime_plugins.py" verify "$prefix" \
+    --manifest-root "$root/ComfyUI/runtime/LICENSES/runtime-exclusions"
+  python3 "$SCRIPT_DIR/python_native_closure.py" audit "$prefix" \
+    --license-root "$root/ComfyUI/runtime/LICENSES/python-native"
   "$python" - "$root" <<PY
 import importlib.util, pathlib, platform, sys, sysconfig
 import torch, torchvision, torchaudio
@@ -114,8 +117,37 @@ assert importlib.util.find_spec("comfyui_manager")
 assert importlib.util.find_spec("pygit2")
 PY
 
-  require_command cc
   extension_temp="$(mktemp -d "${TMPDIR:-/tmp}/Portable Comfy environment extension.XXXXXX")"
+  venv="$extension_temp/custom node runtime"
+  "$python" -m venv --system-site-packages --without-pip "$venv"
+  venv_python="$venv/bin/python"
+  [[ -x "$venv_python" ]] || die "portable Python could not create a custom-node venv"
+  env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    "$venv_python" - "$root" "$venv" <<PY
+import pathlib, platform, sys, sysconfig
+import torch, torchvision, torchaudio
+
+root = pathlib.Path(sys.argv[1]).resolve()
+venv = pathlib.Path(sys.argv[2]).resolve()
+base = root / "ComfyUI/runtime/python"
+assert platform.python_version() == "$PYTHON_VERSION"
+assert pathlib.Path(sys.prefix).resolve() == venv, (sys.prefix, venv)
+assert pathlib.Path(sys.base_prefix).resolve() == base, (sys.base_prefix, base)
+for name in ("purelib", "platlib", "scripts"):
+    value = pathlib.Path(sysconfig.get_path(name)).resolve()
+    assert value.is_relative_to(venv), (name, value, venv)
+for name in ("include", "platinclude"):
+    value = pathlib.Path(sysconfig.get_path(name)).resolve()
+    assert value.is_relative_to(base), (name, value, base)
+for name in ("LIBDIR", "INCLUDEPY", "CONFINCLUDEPY", "LIBPL"):
+    value = sysconfig.get_config_var(name)
+    if value:
+        resolved = pathlib.Path(value).resolve()
+        assert resolved.is_relative_to(base), (name, resolved, base)
+assert torch.__version__ == "$TORCH_VERSION"
+assert torchvision.__version__ == "$TORCHVISION_VERSION"
+assert torchaudio.__version__ == "$TORCHAUDIO_VERSION"
+PY
   cat >"$extension_temp/portable_environment_test.c" <<'C'
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
@@ -124,7 +156,8 @@ static PyMethodDef methods[] = {{"answer", answer, METH_NOARGS, NULL}, {NULL, NU
 static struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "portable_environment_test", NULL, -1, methods};
 PyMODINIT_FUNC PyInit_portable_environment_test(void) { return PyModule_Create(&module); }
 C
-  mapfile -t extension_config < <("$python" - <<'PY'
+  mapfile -t extension_config < <(env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    "$venv_python" - <<'PY'
 import sysconfig
 print(sysconfig.get_config_var("EXT_SUFFIX"))
 print(sysconfig.get_path("include"))
@@ -134,7 +167,8 @@ PY
     || die "environment sysconfig cannot build native extensions"
   cc -shared -fPIC -I"${extension_config[1]}" "$extension_temp/portable_environment_test.c" \
     -o "$extension_temp/portable_environment_test${extension_config[0]}"
-  PYTHONPATH="$extension_temp" "$python" -c \
+  env -u LD_LIBRARY_PATH -u PYTHONHOME -u VIRTUAL_ENV PYTHONPATH="$extension_temp" \
+    "$venv_python" -c \
     'import portable_environment_test as value; assert value.answer() == 42'
 fi
 log "complete Core bundle preflight passed: $root"
