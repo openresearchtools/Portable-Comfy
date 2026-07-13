@@ -268,12 +268,13 @@ PY
 done
 
 if [[ "$desktop_backend" == wayland ]]; then
-  process_environment="$(tr '\0' '\n' <"/proc/$desktop_pid/environ")"
-  grep -Fqx 'QT_QPA_PLATFORM=wayland' <<<"$process_environment" \
-    || die "AppImage did not select its native Wayland fallback"
-  if grep -q '^DISPLAY=' <<<"$process_environment"; then
-    die "native Wayland smoke unexpectedly retained an X11 display"
+  wayland_process_pid=""
+  if ! wayland_process_pid="$(python3 \
+    "$SCRIPT_DIR/find_wayland_desktop_process.py" \
+    "$desktop_pid" "$frontend_ready")"; then
+    die "AppImage did not expose a verified native Wayland desktop process"
   fi
+  log "validated native Wayland Qt process $wayland_process_pid without DISPLAY"
 fi
 
 if ! python3 "$SCRIPT_DIR/verify_webengine_surface.py" \
