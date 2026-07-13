@@ -87,8 +87,16 @@ removing them; it never captures a hosted runner's unrelated HPC installation.
 removed object and checksum-binds the retained post-repair core/device and UID
 bootstrap objects. The UID/local CUDA IPC/P2P workstation path remains. This
 portable build deliberately does not support NVSHMEM multi-node execution or
-scheduler/HPC bootstrap and network transports. Both artifact verification and
-the updater require the policy manifest and its explanatory README.
+scheduler/HPC bootstrap and network transports.
+
+The pinned `nvidia-cufile` wheel is handled by a second exact policy. Its
+optional `libcufile_rdma.so.1` companion depends on a host Mellanox/RDMA stack,
+so it is removed only after its distribution metadata, RECORD entry, path,
+size and upstream SHA-256 all match the reviewed `1.15.1.6` wheel.
+`libcufile.so.0` remains and its post-repair bytes are checksum-bound in
+`LICENSES/runtime-exclusions/cufile-plugin-exclusions.json`; only the cuFile
+RDMA transport is omitted. Artifact verification and the updater require both
+policy manifests and their shared explanatory README.
 
 The AppImage freezes a small copy of that interpreter for the launcher itself.
 Any PyInstaller input below `runtime/python/lib/portable-native/` is classified
@@ -181,9 +189,9 @@ under `runtime/LICENSES/python-packages/`. Native libraries have an independent,
 checksum-bound Debian provenance and notice inventory under
 `runtime/LICENSES/python-native/`; artifact preflight reruns `ldd` with loader
 override variables removed across every ELF and rejects every unresolved or
-non-policy host dependency. It also revalidates the exact NVSHMEM local-runtime
-exclusion policy and rejects a missing, changed, reintroduced or unreviewed
-plugin.
+non-policy host dependency. It also revalidates the exact NVSHMEM and cuFile
+local-runtime exclusion policies and rejects a missing, changed, reintroduced
+or unreviewed plugin or library.
 
 For transport, the logical `.tar.gz` is split into ordered files of at most
 1.9 GB plus a JSON descriptor. The descriptor binds the logical archive name,

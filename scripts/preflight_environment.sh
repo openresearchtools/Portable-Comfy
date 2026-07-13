@@ -84,7 +84,8 @@ if ((structural == 0)); then
   [[ -s "$prefix/LICENSE.txt" \
      && -s "$root/ComfyUI/runtime/LICENSES/python-packages/packages.json" \
      && -s "$root/ComfyUI/runtime/LICENSES/python-native/packages.json" \
-     && -s "$root/ComfyUI/runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json" ]] \
+     && -s "$root/ComfyUI/runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json" \
+     && -s "$root/ComfyUI/runtime/LICENSES/runtime-exclusions/cufile-plugin-exclusions.json" ]] \
     || die "CPython or runtime-package redistribution notices are missing"
   "$repair"
   [[ "$(cat "$prefix/.portable-comfy-prefix")" == "$(realpath "$prefix")" ]] \

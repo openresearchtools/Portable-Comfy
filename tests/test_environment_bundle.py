@@ -168,6 +168,9 @@ def make_environment(root: Path, *, frozen_requirements: str | None = None) -> P
     (exclusions_root / "nvshmem-plugin-exclusions.json").write_text(
         json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
     )
+    (exclusions_root / "cufile-plugin-exclusions.json").write_text(
+        json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
+    )
     for name in ("python-portable", "repair-portable-entrypoints"):
         path = comfyui / "runtime/python/bin" / name
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -339,6 +342,20 @@ def test_verifier_requires_exact_core_root_identity_and_notices(
     checked = verify(root)
     assert checked.returncode != 0
     assert "required redistribution notice" in checked.stderr
+
+
+def test_verifier_requires_cufile_exclusion_manifest(tmp_path: Path) -> None:
+    root = tmp_path / f"Portable-Comfy-core-v{PINNED['COMFY_VERSION']}"
+    make_environment(root)
+    assert generate(root).returncode == 0
+    (
+        root
+        / "ComfyUI/runtime/LICENSES/runtime-exclusions/cufile-plugin-exclusions.json"
+    ).unlink()
+
+    checked = verify(root)
+    assert checked.returncode != 0
+    assert "cufile-plugin-exclusions.json" in checked.stderr
 
 
 def test_verifier_rejects_non_exact_upstream_commit_identity(tmp_path: Path) -> None:

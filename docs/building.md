@@ -137,15 +137,16 @@ manifest. This prevents ordinary transitive-version drift. The artifacts are
 not claimed to be byte-for-byte reproducible because all wheel bytes and build
 tools are not yet hash-locked.
 
-After installation, the build applies the pinned local-workstation NVSHMEM
-policy before constructing the portable ELF closure. Only the exact optional
-MPI/PMIx/OpenSHMEM/InfiniBand/libfabric/UCX plugins reviewed for the pinned
-`nvidia-nvshmem-cu13` wheel may be removed. The resulting
-`runtime/LICENSES/runtime-exclusions/` manifest preserves their upstream
-hashes, records the retained post-RUNPATH-repair hashes and states the lost
-multi-node/HPC capability. Preflight verifies that record and refuses drift in
-the wheel version, RECORD, file set, checksums, capabilities or retained UID
-workstation path.
+After installation, the build applies pinned local-workstation NVSHMEM and
+cuFile policies before constructing the portable ELF closure. Only the exact
+optional MPI/PMIx/OpenSHMEM/InfiniBand/libfabric/UCX plugins reviewed for the
+pinned `nvidia-nvshmem-cu13` wheel and `libcufile_rdma.so.1` reviewed for
+`nvidia-cufile==1.15.1.6` may be removed. The resulting
+`runtime/LICENSES/runtime-exclusions/` manifests preserve their upstream
+hashes, record retained post-RUNPATH-repair hashes, and state the lost
+multi-node/HPC and cuFile RDMA capabilities. `libcufile.so.0` remains.
+Preflight verifies both records and refuses drift in wheel versions, RECORDs,
+file sets, checksums, capabilities or retained workstation paths.
 
 `packaging/versions.env` is the authoritative mapping for a generation. For a
 future upstream ComfyUI release, update `COMFY_VERSION` and `COMFY_TAG` to the

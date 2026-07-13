@@ -191,10 +191,10 @@ assert importlib.util.find_spec("pygit2") is not None
 print(json.dumps({"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda}))
 PY
 
-# The CUDA wheel includes optional NVSHMEM cluster plugins whose MPI/PMIx,
-# OpenSHMEM, fabric, UCX and InfiniBand stacks are intentionally supplied by an
-# HPC site rather than the wheel. Remove only the exact reviewed plugin bytes;
-# retain core/device/UID/local functionality and record every exclusion.
+# CUDA wheels include optional NVSHMEM cluster plugins and a cuFile RDMA
+# companion whose MPI/PMIx/OpenSHMEM/fabric/UCX/InfiniBand/RDMA stacks belong
+# to an HPC site. Remove only exact reviewed bytes; retain NVSHMEM core/device/
+# UID/local functionality and libcufile.so.0, and record every exclusion.
 runtime_exclusions="$comfyui_root/runtime/LICENSES/runtime-exclusions"
 python3 "$SCRIPT_DIR/prune_runtime_plugins.py" prune "$prefix" \
   --manifest-root "$runtime_exclusions"

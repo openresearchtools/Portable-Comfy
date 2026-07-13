@@ -212,6 +212,9 @@ def make_bundle(
     (exclusions_root / "nvshmem-plugin-exclusions.json").write_text(
         json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
     )
+    (exclusions_root / "cufile-plugin-exclusions.json").write_text(
+        json.dumps({"schema_version": 1, "test_fixture": True}), encoding="utf-8"
+    )
     if not omit_frozen_requirements:
         default_freeze = "".join(
             f"{package['name'].replace('-', '_')}=="
@@ -697,6 +700,7 @@ def test_archive_root_version_must_match_manifest(
         "runtime/LICENSES/python-packages/packages.json",
         "runtime/LICENSES/python-native/packages.json",
         "runtime/LICENSES/runtime-exclusions/nvshmem-plugin-exclusions.json",
+        "runtime/LICENSES/runtime-exclusions/cufile-plugin-exclusions.json",
         "runtime/LICENSES/runtime-exclusions/README.md",
     ],
 )
